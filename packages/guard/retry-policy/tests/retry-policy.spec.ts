@@ -156,7 +156,7 @@ describe('retry-policy cancellation', () => {
     upstream.abort('user cancelled')
     const result = await pending
     expect(result.isError).toBe(true)
-    expect(result.error.info?.code).toBe(TOOL_ABORTED)
+    expect(result.error?.info?.code).toBe(TOOL_ABORTED)
     expect(retryRecords(agent)).toHaveLength(0)
   })
 })
