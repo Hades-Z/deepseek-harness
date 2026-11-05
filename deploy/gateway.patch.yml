@@ -1,0 +1,25 @@
+# The gateway route this service talks to.
+#
+# The `sdk` profile registers only `deepseek-official`, whose protocol is
+# Anthropic Messages against api.deepseek.com. An evaluation gateway commonly
+# serves OpenAI chat-completions instead, so mounting the dormant `llm-pi-ai`
+# twin with the deployment's endpoint keeps the harness usable against either.
+#
+# The endpoint, model and credential all come from the environment: this file
+# names no host, so one image serves every deployment.
+- id: llm-pi-ai
+  config:
+    providers:
+      gateway:
+        displayName: Evaluation Gateway
+        api: openai-completions
+        baseURL: !!js 'process.env.LLM_BASE_URL?.trim()'
+        apiKeyEnv: LLM_API_KEY
+        models:
+          - id: !!js 'process.env.LLM_MODEL?.trim()'
+            name: !!js 'process.env.LLM_MODEL?.trim()'
+            # pi-ai derives the output budget from this window
+            # (`contextWindow - estimated input - 4096`, floored at 1), and an
+            # understated value turns a large prompt into a one-token reply.
+            contextWindow: !!js 'Number(process.env.LLM_CONTEXT_WINDOW || 1048576)'
+            maxTokens: !!js 'Number(process.env.LLM_MAX_TOKENS || 8192)'

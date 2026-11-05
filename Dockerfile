@@ -50,6 +50,7 @@ ENV PATH="/opt/venv/bin:${PATH}" \
     DSH_BIN=/workspace/apps/cli/lib/bin.js \
     DSH_PROFILE=sdk \
     DSH_HOME=/var/lib/dsh \
+    DSH_PATCHES=/workspace/deploy/gateway.patch.yml \
     DSH_INITIALIZE_TIMEOUT=300
 RUN mkdir -p /var/lib/dsh
 EXPOSE 8080
