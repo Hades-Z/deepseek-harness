@@ -1,21 +1,26 @@
-# DeepSeek Harness as an evaluation service.
+# DeepSeek Harness as a long-lived evaluation service.
 #
-# The container runs AutoEval's hub server, which exposes the run protocol
-# Harbor speaks (`POST /v1/runs`, `/step`, `/cancel`) and drives this harness
-# through its Python SDK. Both halves live in one image: the harness builds its
-# CLI into `apps/cli/lib`, and the SDK spawns that CLI per run.
+# The container holds this project's own build and its own Python SDK; nothing
+# from the evaluator is copied in. `deepseek_harness.service` exposes the run
+# protocol over HTTP so an external evaluator addresses it by URL.
 #
 # The build runs here rather than being copied in because `lib/` is generated
 # output and the repository does not carry it.
-FROM node:24-bookworm-slim AS base
+FROM python:3.12-slim AS base
 ENV PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1 \
     NEXT_TELEMETRY_DISABLED=1
 RUN apt-get update \
  && apt-get install -y --no-install-recommends \
-      python3 python3-venv python3-pip ca-certificates git ripgrep \
-      build-essential make g++ \
- && rm -rf /var/lib/apt/lists/* \
+      ca-certificates curl git ripgrep build-essential make g++ xz-utils \
+ && rm -rf /var/lib/apt/lists/*
+# Node comes from the official tarball rather than a second base image so the
+# Python interpreter stays the one this image's package manager owns.
+ARG NODE_VERSION=24.22.2
+RUN arch="$(dpkg --print-architecture)" \
+ && case "$arch" in amd64) node_arch=x64 ;; arm64) node_arch=arm64 ;; *) exit 1 ;; esac \
+ && curl -fsSL "https://nodejs.org/dist/v${NODE_VERSION}/node-v${NODE_VERSION}-linux-${node_arch}.tar.xz" \
+    | tar -xJ -C /usr/local --strip-components=1 \
  && corepack enable && corepack prepare pnpm@11.28.5 --activate
 WORKDIR /workspace
 
@@ -36,18 +41,16 @@ FROM deps AS builder
 COPY . .
 RUN pnpm run build
 
-# AutoEval owns the HTTP entry point and the SDK bridge.
+# The runtime installs the SDK that drives that build, and nothing else.
 FROM builder AS runtime
-COPY --from=autoeval . /opt/autoeval/
 RUN python3 -m venv /opt/venv \
- && /opt/venv/bin/pip install --no-cache-dir -e /opt/autoeval \
+ && /opt/venv/bin/pip install --no-cache-dir --upgrade pip \
  && /opt/venv/bin/pip install --no-cache-dir -e /workspace/python/sdk
 ENV PATH="/opt/venv/bin:${PATH}" \
-    PYTHONPATH=/opt/autoeval/src \
     DSH_BIN=/workspace/apps/cli/lib/bin.js \
-    TARGET=DSH \
+    DSH_PROFILE=sdk \
     DSH_INITIALIZE_TIMEOUT=300
 EXPOSE 8080
 HEALTHCHECK --interval=30s --timeout=5s --start-period=90s \
   CMD python3 -c "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8080/healthz', timeout=4).status == 200 else 1)"
-CMD ["python3", "-m", "autoeval.benchmarks.hub_server", "--host", "0.0.0.0", "--port", "8080"]
+CMD ["python3", "-m", "deepseek_harness.service", "--host", "0.0.0.0", "--port", "8080"]
