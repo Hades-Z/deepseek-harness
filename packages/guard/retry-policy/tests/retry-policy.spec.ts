@@ -83,15 +83,16 @@ describe('retry-policy budget', () => {
     expect(result.isError).toBe(false)
     const records = retryRecords(agent)
     expect(records).toHaveLength(2)
-    if (records[0].type !== 'tool/retry-started' || records[1].type !== 'tool/retry-started') {
+    const [first, second] = records
+    if (first?.type !== 'tool/retry-started' || second?.type !== 'tool/retry-started') {
       throw new Error('unexpected record type')
     }
-    expect([records[0].data.attempt, records[1].data.attempt]).toEqual([2, 3])
-    expect([records[0].data.priorErrorCode, records[1].data.priorErrorCode]).toEqual([
+    expect([first.data.attempt, second.data.attempt]).toEqual([2, 3])
+    expect([first.data.priorErrorCode, second.data.priorErrorCode]).toEqual([
       'TRANSIENT', 'TRANSIENT',
     ])
-    expect(records[0].data.maxAttempts).toBe(3)
-    expect(records[0].data.sessionId).toBe(agent.session.id)
+    expect(first.data.maxAttempts).toBe(3)
+    expect(first.data.sessionId).toBe(agent.session.id)
   })
 
   it('stops at the declared attempt budget and returns the last failure', async () => {
