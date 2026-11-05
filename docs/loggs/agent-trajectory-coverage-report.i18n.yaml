@@ -1,0 +1,28 @@
+# Bilingual-pair consistency record for agent-trajectory-coverage-report.md (docs/i18n/README.md): per heading
+# section, a hash of its English and Chinese blocks outside code blocks and generated regions.
+# After editing either side, bring the other along and re-record with:
+#   pnpm run verify-translation-pairing --write docs/loggs/agent-trajectory-coverage-report.md
+/agent-trajectory-coverage-report-w5:
+  en: d5b6249aff444c3c
+  zh: d0bd37b936756da2
+/agent-trajectory-coverage-report-w5/conclusion:
+  en: 24399f87adb217d8
+  zh: c4afd70a1cadc9e3
+/agent-trajectory-coverage-report-w5/verdict-rules:
+  en: ce97287ef436cbe5
+  zh: e858943fdd43d7be
+/agent-trajectory-coverage-report-w5/main-table:
+  en: 8193354bd39a59a9
+  zh: 08ca33b8e3fe0979
+/agent-trajectory-coverage-report-w5/residual-partial-list:
+  en: 09011caf51633d44
+  zh: 557239ed7274631c
+/agent-trajectory-coverage-report-w5/residual-partial-list/field-completeness-pass-on-the-partial-points:
+  en: 4a1ac2374869df7a
+  zh: 9a8fa45980207e21
+/agent-trajectory-coverage-report-w5/unverified-and-environment-limitations:
+  en: 381aa5cb9fdf0050
+  zh: 58b30f8f9429e682
+/agent-trajectory-coverage-report-w5/verification-record:
+  en: eeb37499bc422b2b
+  zh: 9045b554064f18bb

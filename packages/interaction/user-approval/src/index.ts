@@ -256,7 +256,13 @@ export class ApprovalService extends Service {
       ...req.reason !== undefined ? { reason: req.reason } : {},
     })
     const outcome = await this.decide(req, session)
-    session.append('approval/decided', { id, outcome })
+    session.append('approval/decided', {
+      id,
+      outcome,
+      // The claiming listener's self-report, read after the answer settles;
+      // absent unless an answerer set it — identity is never inferred here.
+      ...req.responder === undefined ? {} : { responder: req.responder },
+    })
     return outcome
   }
 

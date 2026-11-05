@@ -153,7 +153,9 @@ interface LspService {
   registerProvider(provider: LspProvider): () => void
   /**
    * Select a provider by the file's extension and run one query. Selection is per-query and
-   * order-independent; no match throws `LspError` `LSP_UNAVAILABLE`.
+   * order-independent; no match throws `LspError` `LSP_UNAVAILABLE`. A resolved route appends a
+   * log-only `tool/provider-selected` session record; the append is contained and never changes
+   * this result.
    * @param request - the normalized query.
    * @param signal - optional cancellation forwarded to the selected provider.
    * @returns the normalized, closed-union result.
@@ -190,7 +192,9 @@ registerProvider(provider: LspProvider): () => void
 
 /**
  * Select a provider by the file's extension and run one query. Selection is per-query and
- * order-independent; no match throws `LspError` `LSP_UNAVAILABLE`.
+ * order-independent; no match throws `LspError` `LSP_UNAVAILABLE`. A resolved route appends a
+ * log-only `tool/provider-selected` session record; the append is contained and never changes
+ * this result.
  * @param request - the normalized query.
  * @param signal - optional cancellation forwarded to the selected provider.
  * @returns the normalized, closed-union result.

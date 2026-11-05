@@ -1218,8 +1218,15 @@ describe('compaction region transaction', () => {
       agent(session, MODEL),
     )).rejects.toThrow('summary unavailable')
     expect(session.surface.nodes).toEqual(before)
+    expect(session.snapshotEvents().findLast(event => event.type === 'compaction/start')?.data)
+      .toMatchObject({ trigger: 'explicit-region', autoCaller: null })
     expect(session.snapshotEvents().findLast(event => event.type === 'compaction/end')?.data)
-      .toMatchObject({ error: 'summary unavailable' })
+      .toMatchObject({
+        error: 'summary unavailable',
+        generationAdvanced: false,
+        retryDecision: 'not-applicable',
+        recovered: false,
+      })
   })
 
   it('stringifies non-Error failures in the durable end bracket', async () => {
@@ -1755,6 +1762,8 @@ describe('model-switch pressure', () => {
 
     expect(calls).toHaveBeenCalledTimes(2)
     for (const [options] of calls.mock.calls) expect(options).toMatchObject({ provider: MODEL, model: MODEL })
+    expect(session.snapshotEvents().findLast(event => event.type === 'compaction/start')?.data)
+      .toMatchObject({ trigger: 'pressure', autoCaller: 'agent/request' })
     expect(session.snapshotEvents().filter(event => event.type === 'compaction/summary')).toHaveLength(2)
     expect(ctx.tokenMeter.measure(session, { config: selected }).totalTokens).toBeLessThan(500)
     expect(session.requestHeader()).toEqual(previous)
@@ -1947,6 +1956,14 @@ describe('automatic listener and loader composition', () => {
     const pressured = conversation(4)
     await preStep(ctx, agent(pressured, 'unconfigured-agent-fallback'))
     expect(pressured.snapshotEvents().some(event => event.type === 'compaction/summary')).toBe(true)
+    expect(pressured.snapshotEvents().findLast(event => event.type === 'compaction/start')?.data)
+      .toMatchObject({ trigger: 'pressure', autoCaller: 'agent/pre-step' })
+    expect(pressured.snapshotEvents().findLast(event => event.type === 'compaction/end')?.data)
+      .toMatchObject({
+        generationAdvanced: true,
+        retryDecision: 'not-applicable',
+        recovered: false,
+      })
 
     const small = conversation(1)
     await preStep(ctx, agent(small, MODEL))
@@ -2080,6 +2097,14 @@ describe('automatic listener and loader composition', () => {
     expect(session.surface.replaceGeneration).toBe(beforeGeneration + 1)
     expect(session.snapshotEvents().some(event => event.type === 'compaction/summary')).toBe(true)
     expect(session.surface.nodes).toContain(retainedSeq)
+    expect(session.snapshotEvents().findLast(event => event.type === 'compaction/start')?.data)
+      .toMatchObject({ trigger: 'context-overflow', autoCaller: 'agent/request-error' })
+    expect(session.snapshotEvents().findLast(event => event.type === 'compaction/end')?.data)
+      .toMatchObject({
+        generationAdvanced: true,
+        retryDecision: 'retry',
+        recovered: true,
+      })
   })
 
   it('authorizes overflow retry when pruning alone advances an indivisible surface', async () => {
@@ -2146,7 +2171,12 @@ describe('automatic listener and loader composition', () => {
     expect(session.surface.replaceGeneration).toBe(1)
     expect(session.snapshotEvents().filter(event => event.type === 'tool/result')).toHaveLength(2)
     expect(session.snapshotEvents().findLast(event => event.type === 'compaction/end')?.data)
-      .toMatchObject({ error: 'summary unavailable after prune' })
+      .toMatchObject({
+        error: 'summary unavailable after prune',
+        generationAdvanced: true,
+        retryDecision: 'retry',
+        recovered: true,
+      })
     expect(warnings).toContainEqual(expect.stringContaining('retrying from the replacement surface'))
   })
 
@@ -2170,6 +2200,13 @@ describe('automatic listener and loader composition', () => {
 
     expect(await recover(ctx, agent(session, MODEL), overflow(), controller.signal)).toBe(false)
     expect(session.surface.replaceGeneration).toBe(1)
+    expect(session.snapshotEvents().findLast(event => event.type === 'compaction/end')?.data)
+      .toMatchObject({
+        error: 'summary cancelled after prune',
+        generationAdvanced: true,
+        retryDecision: 'preserve-error',
+        recovered: false,
+      })
   })
 
   it('preserves the newest whole tool-call/result pair during forced overflow compaction', async () => {

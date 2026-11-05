@@ -11,7 +11,7 @@ import { agentEvents } from '@deepseek-ai/dsh-agent'
 import AgentLoop from '@deepseek-ai/dsh-agent-loop'
 import { mountAgentLoopTestDependencies } from '@deepseek-ai/dsh-agent-loop-testkit'
 import { SessionId } from '@deepseek-ai/dsh-session'
-import type { SessionEvent, SessionEventMap } from '@deepseek-ai/dsh-session'
+import type { SessionEvent } from '@deepseek-ai/dsh-session'
 import * as JsonlSessionPersistence from '@deepseek-ai/dsh-session-persistence-jsonl'
 import * as SubagentSpawn from '@deepseek-ai/dsh-subagent-spawn-in-process'
 import * as SubagentFork from '@deepseek-ai/dsh-subagent-fork-in-process'
@@ -688,10 +688,10 @@ describe('SubagentRuntime.startActivation', () => {
     const childId = SessionId('00000000-0000-4000-8000-000000000321')
     const catalogFailure = new Error('catalog append failed')
     const cleanupFailure = new Error('activation disposal also failed')
-    const appendCatalog = parent.session.append.bind(parent.session) as (
-      type: 'subagent/catalog',
-      data: SessionEventMap['subagent/catalog'],
-    ) => SessionEvent<'subagent/catalog'>
+    const append = parent.session.append.bind(parent.session) as (
+      type: string,
+      data: unknown,
+    ) => SessionEvent
     vi.spyOn(parent.session, 'append').mockImplementation(((type: string, data: unknown) => {
       if (type === 'subagent/catalog') {
         const activation = managerState(ctx).resident.get(childId)
@@ -704,7 +704,8 @@ describe('SubagentRuntime.startActivation', () => {
         })
         throw catalogFailure
       }
-      return appendCatalog('subagent/catalog', data as SessionEventMap['subagent/catalog'])
+      // Later log-only facts such as subagent/run-end keep their own type.
+      return append(type, data)
     }) as typeof parent.session.append)
 
     await expect(ctx.subagents.startActivation({
@@ -3472,7 +3473,9 @@ describe('continuable settlement delivery', () => {
     await host.dispose()
     await waitNoActivation(ctx, started.childId)
     await vi.waitFor(() => { expect(ends).toHaveLength(1) })
-    expect(warnings).toEqual([])
+    // subagent/run-end is a new log-only record; a parent disposed before settle
+    // cannot append it, and that contained warning is expected.
+    expect(warnings.filter(text => !text.includes('not recorded as subagent/run-end'))).toEqual([])
   })
 
   it('logs a rejected notice instead of failing the child\'s teardown', async () => {

@@ -55,6 +55,16 @@ declare module '@deepseek-ai/dsh-session/types' {
     'approval/decided': {
       id: ApprovalRequestId
       outcome: ApprovalOutcome
+      /**
+       * Stable id the answering listener self-reported on the request before
+       * returning its outcome. Absent when no listener claimed the ask (the
+       * fail-closed `'unavailable'`, the deterministic `'rejected'` under the
+       * `'never'` policy, the pre-aborted `'cancelled'`) or when the answerer
+       * did not self-report — the service never infers identity from stack,
+       * path, or class. Built-in answerers set an explicit stable id; the SDK
+       * bridge reports `sdk-host` only where it is the actual responder.
+       */
+      responder?: string
     }
   }
 }
@@ -73,6 +83,14 @@ export interface ApprovalRequestEvent {
   readonly displayReason?: { readonly en: string; readonly [locale: string]: string }
   /** Cancellation lifetime of the pending request. */
   readonly signal?: AbortSignal
+  /**
+   * The one writable field of an otherwise readonly request: before returning
+   * its outcome, the listener that actually answered sets this to its stable
+   * id, and the service copies it onto the `approval/decided` audit event.
+   * Leave it absent to stay an unknown responder; the service never infers
+   * identity.
+   */
+  responder?: string
 }
 
 declare module '@deepseek-ai/cordis' {

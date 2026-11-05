@@ -384,6 +384,8 @@ export function apply(ctx: Context, config: Config = {}): void {
     return defineTool({
       name: 'pwsh',
       description: pwshDescription(escalationModes.length > 0),
+      // Trajectory provenance: names this package as the settled call's owner.
+      pluginOwner: '@deepseek-ai/dsh-tool-pwsh',
       /* jscpd:ignore-start -- deliberate mirror of dsh-tool-bash's parameter surface (pwsh-tool-and-executor Agent Note). */
       parameters: {
         description: {

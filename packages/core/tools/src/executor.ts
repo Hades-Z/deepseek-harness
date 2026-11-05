@@ -15,6 +15,31 @@ export interface ToolPromptSection extends Pick<PromptSection, 'name' | 'order' 
   readonly text: string | ((tools: readonly ToolDefinition[]) => string)
 }
 
+/** Ownership declared by the definition an executor actually invoked for one call. */
+export interface ToolCallAttribution {
+  /** Plugin id declared by the executed definition, if any. */
+  readonly pluginOwner: string | null
+  /** Provider id declared by the executed definition, if any. */
+  readonly providerId: string | null
+}
+
+/**
+ * Batch-local sink for the definition the shared pipeline actually invoked.
+ * The tool registry supplies one per dispatch and turns what it receives into
+ * `tool/result-attribution`, so the record names the definition that ran rather
+ * than a later registration under the same name. Executors built on the shared
+ * pipeline forward it; a custom executor that reports nothing leaves its calls
+ * unattributed instead of being guessed from the current registry.
+ */
+export interface ToolBatchAttributionSink {
+  /**
+   * Record one executed call's declared ownership.
+   * @param callId - the model call id being attributed.
+   * @param attribution - ownership declared by the definition that ran.
+   */
+  record(callId: ToolCallId, attribution: ToolCallAttribution): void
+}
+
 /** Raw model calls, with optional Agent ownership and model-step logging. */
 export interface ToolBatchInput {
   readonly calls: readonly ToolCallBlock[]
@@ -45,6 +70,13 @@ export interface ToolBatchInput {
     readonly turn: number
     readonly step: number
   }
+  /**
+   * Registry-owned sink for the definitions actually invoked in this batch.
+   * Supplied by `ToolsService.execute`; the shared pipeline reports each call's
+   * executed ownership here. Never model-visible and not part of the settled
+   * batch result.
+   */
+  readonly attribution?: ToolBatchAttributionSink
 }
 
 /** One settled result correlated with its original model call. */
@@ -62,6 +94,13 @@ export interface ToolBatchResult {
 
 /** A plugin owns argument parsing, dispatch, scheduling, cancellation, and logging. */
 export interface ToolExecutor {
+  /**
+   * Stable executor identity recorded in `tool/result-attribution`. Declared by
+   * executor packages that want their batches attributed by name; omitted
+   * leaves the record partial. Constructor names are not used: they are
+   * unstable across builds and do not identify the deployment's selection.
+   */
+  readonly executorId?: string
   /** Guidance registered and disposed with this executor; absent means no executor-owned sections. */
   readonly sections?: readonly ToolPromptSection[]
   /**

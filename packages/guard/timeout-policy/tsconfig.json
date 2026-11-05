@@ -22,6 +22,9 @@
       "path": "../../util/timeout"
     },
     {
+      "path": "../../core/session"
+    },
+    {
       "path": "../../core/tools"
     }
   ]

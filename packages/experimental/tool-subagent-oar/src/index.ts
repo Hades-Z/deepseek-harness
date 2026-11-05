@@ -39,6 +39,8 @@ export function apply(ctx: Context, config: Config): void {
       + 'This tool returns a child id; a later completion notice includes its final answer. '
       + 'The child does not accept follow-up messages. Start independent tasks together and continue useful work while they run. '
       + 'When only waiting for their results remains, end your turn instead of polling.',
+    // Trajectory provenance: names this package as the settled call's owner.
+    pluginOwner: '@deepseek-ai/dsh-experimental-tool-subagent-oar',
     parameters: {
       runtime: {
         type: 'string',

@@ -27,6 +27,8 @@ export function apply(ctx: Context): void {
       + 'input/output schemas. Call this Tool before writing or configuring a plugin, then select the provider and '
       + 'method for cordis_inspect_query from its result. Do not guess names or treat an Inspect method as a business '
       + 'Service that Plugin code can call.',
+    // Trajectory provenance: names this package as the settled call's owner.
+    pluginOwner: '@deepseek-ai/dsh-tool-cordis',
     parameters: {},
     output: {
       schema: { type: 'json' },
@@ -47,6 +49,8 @@ export function apply(ctx: Context): void {
       + 'Slot trees and props. Host queries run locally. A Client query waits for the first valid page response '
       + 'within the configured timeout; otherwise it reports a Client failure or asks you to reconnect and retry. '
       + 'This Tool cannot invoke business Service methods or modify the runtime.',
+    // Trajectory provenance: names this package as the settled call's owner.
+    pluginOwner: '@deepseek-ai/dsh-tool-cordis',
     parameters: {
       platform: { type: 'string', required: true, enum: ['host', 'client'], description: 'Runtime platform that owns the Provider.' },
       provider: { type: 'string', required: true, description: 'Exact Provider ID returned by cordis_inspect_list.' },

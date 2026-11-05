@@ -22,6 +22,17 @@ export interface ToolOutputDefinition {
   presentationMeta?(args: unknown, value: JsonValue): JsonValue
 }
 
+/**
+ * Declared retry budget for one tool body. The original attempt plus the
+ * retries it permits must fit within `maxAttempts`.
+ */
+export interface ToolRetryPolicy {
+  /** Total attempts permitted for one call, including the original attempt. */
+  readonly maxAttempts: number
+  /** Delay slept before each retry, in milliseconds; omit for no delay. */
+  readonly backoffMs?: number
+}
+
 /** A registered tool: its schema plus the execution function. */
 export interface ToolDefinition extends ToolSchema {
   /** Mandatory canonical output declaration. */
@@ -68,6 +79,14 @@ export interface ToolDefinition extends ToolSchema {
    */
   timeoutMs?: number
   /**
+   * Opt-in retry budget for this tool's own body. Omit to dispatch exactly once.
+   * Enforced by `@deepseek-ai/dsh-tool-call-retry-policy` (a `tools/execute`
+   * wrapper); never sent to the model. Declaring it asserts the body is
+   * replayable: a retried attempt runs the implementation again, including its
+   * external side effects. Caller cancellation is never retried.
+   */
+  retry?: ToolRetryPolicy
+  /**
    * Pure synchronous classifier for overlap with sibling tool calls. Only
    * `true` opts in; omission, exceptions, non-`true` returns, and invalid
    * `defineTool` arguments are exclusive. This metadata is never model-visible.
@@ -99,6 +118,20 @@ export interface ToolDefinition extends ToolSchema {
    * for the same replay reason.
    */
   presentResult?(args: unknown, result: ToolResult): ToolResultView | undefined
+  /**
+   * Plugin id owning this definition, for trajectory attribution. Declared by
+   * tool packages that want their settled batches attributed to a stable owner
+   * in `tool/result-attribution`; omitted leaves the record `partial`. Never
+   * model-visible: `schemas()` whitelists only name/description/parameters.
+   */
+  readonly pluginOwner?: string
+  /**
+   * Provider id the owning executor dispatches through, for trajectory
+   * attribution. Declared by executors that route calls through a named provider
+   * (e.g. a sandbox or remote runtime); omitted leaves the record `partial`.
+   * Never model-visible.
+   */
+  readonly providerId?: string
 }
 
 /** Inputs for a tool's step-time activation condition. */
@@ -187,6 +220,12 @@ export interface ToolExecutionInput {
   readonly agent?: Agent
   /** Step admission shared by Native and PTC dispatch. Conditional tools require it. */
   readonly toolSet?: ResolvedToolSet
+  /**
+   * Committed model step for log-only pipeline records (`tool/result-rewrite`,
+   * `tool/pipeline-error`). The executor propagates it from `ToolBatchInput.log`;
+   * undefined for nested dispatches outside a model step.
+   */
+  readonly log?: { readonly turn: number; readonly step: number }
   /**
    * Opaque token of the enclosing transport execution, when one exists. PTC
    * mode sets this on SDK sub-dispatches so commit-style observers can wait for

@@ -49,6 +49,9 @@
     },
     {
       "path": "../../core/tool-executor-ptc"
+    },
+    {
+      "path": "../../deliverables/workspace-changes"
     }
   ]
 }

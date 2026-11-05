@@ -73,6 +73,8 @@ export function applyWriteTool(ctx: Context, sandbox: FsSandboxController): void
   ctx.tools.register(defineTool({
     name: 'write',
     description: 'Create or fully replace a UTF-8 text file.',
+    // Trajectory provenance: names this package as the settled call's owner.
+    pluginOwner: '@deepseek-ai/dsh-tool-fs',
     parameters: {
       file_path: {
         type: 'string', required: true,

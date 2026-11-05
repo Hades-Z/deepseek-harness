@@ -2,9 +2,12 @@
  * Token-budgeted tool content with recoverable text and image addresses.
  * Post-execute policies settle before retention; canonical program values
  * remain intact. Missing recovery storage or image pricing keeps the original
- * content and reports the reason through the logger.
+ * content and reports the reason through the logger. Each successful spill
+ * appends a log-only `spill/spilled` record with the threshold and retention
+ * accounting; a failed append only warns.
  * @module @deepseek-ai/dsh-spill-policy
  */
+import { createHash } from 'node:crypto'
 import type {} from '@deepseek-ai/dsh-tool-executor-ptc'
 import type { Context } from '@deepseek-ai/cordis'
 import z from '@deepseek-ai/schemastery'
@@ -17,10 +20,19 @@ import type {} from '@deepseek-ai/dsh-attachment'
 import type {} from '@deepseek-ai/dsh-fs'
 import type { SpillPolicyExec } from './types.ts'
 import { formatSpillNotice } from './notice.ts'
+
+/**
+ * Digest one content list so a replay can match a spilled artifact to its source.
+ * @param content - the content blocks to digest.
+ * @returns the SHA-256 hex digest of the JSON-encoded blocks.
+ */
+function contentDigest(content: readonly ContentBlock[]): string {
+  return createHash('sha256').update(JSON.stringify(content)).digest('hex')
+}
 import { retainContent } from './retention.ts'
 import type { RetainableBlock } from './retention.ts'
 
-export type { SpillPolicyExec } from './types.ts'
+export type { SpillPolicyExec, SpillSpilledEventData } from './types.ts'
 
 /** Optional result-retention budget. */
 export interface Config {
@@ -97,8 +109,9 @@ export function apply(ctx: Context, config: Config): void {
       const images = content.filter((block): block is ImageBlock => block.type === 'image')
       const price = pricing(exec, images)
       if (content.reduce((total, block) => total + price(block), 0) <= maxTokens) return undefined
-      const owner = (exec as SpillPolicyExec).agent?.session.header.id
-      if (owner === undefined) throw new Error(`no session owner for ${toolName} ${label}`)
+      const session = (exec as SpillPolicyExec).agent?.session
+      if (session === undefined) throw new Error(`no session owner for ${toolName} ${label}`)
+      const owner = session.header.id
       const spillStore = ctx.get('spillStore')
       if (spillStore === undefined) throw new Error('no ctx.spillStore backend loaded')
       const ref: SpillRef = await spillStore.saveText({
@@ -123,6 +136,17 @@ export function apply(ctx: Context, config: Config): void {
         const previous = merged.at(-1)
         if (block.type === 'text' && previous?.type === 'text') previous.text += block.text
         else merged.push(block.type === 'text' ? { ...block } : block)
+      }
+      // The replacement is committed; the observation must not change it.
+      try {
+        session.append('spill/spilled', {
+          callId, toolName, label, threshold: maxTokens,
+          ref: { locator: ref.locator, bytes: ref.bytes },
+          omittedBytes: retained.omittedBytes, omittedImages: retained.omittedImages,
+          originalDigest: contentDigest(content), previewDigest: contentDigest(merged),
+        })
+      } catch (error: unknown) {
+        ctx.logger.warn(`spill-policy: failed to record spill/spilled: ${String(error)}`)
       }
       return merged
     } catch (error: unknown) {

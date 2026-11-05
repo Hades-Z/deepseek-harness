@@ -29,6 +29,13 @@ export interface GoalSnapshotChangeMeta {
   readonly roundsStarted: number
   readonly createdAt: number
   readonly updatedAt: number
+  /**
+   * Present only on `block`: the continuation rounds already admitted and the
+   * round budget in force when the goal was blocked. Deterministic duplication
+   * of `roundsStarted` and `goal.maxGoalRounds` at block time, so a trajectory
+   * consumer reads the blocked-round record without replaying the fold.
+   */
+  readonly blockedRounds?: { readonly admitted: number; readonly threshold: number }
 }
 
 /** Tombstone retained when the current goal is cleared. */

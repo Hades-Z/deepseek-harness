@@ -20,6 +20,8 @@ export function apply(ctx: Context): void {
   ctx.tools.register(defineTool({
     name: 'working_directory',
     description: 'Read the current working directory, or change it with cd. Relative paths use the current directory. Existing shells and running processes keep their own directories.',
+    // Trajectory provenance: names this package as the settled call's owner.
+    pluginOwner: '@deepseek-ai/dsh-tool-working-directory',
     parameters: {
       cd: { type: 'string', description: 'Existing directory to enter. Omit to read the current directory.' },
     },

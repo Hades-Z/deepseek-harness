@@ -195,6 +195,8 @@ export function apply(ctx: Context, config: Config): void {
   ctx.tools.register(defineTool({
     name: 'get_goal',
     description: GET_DESCRIPTION,
+    // Trajectory provenance: names this package as the settled call's owner.
+    pluginOwner: '@deepseek-ai/dsh-tool-goal',
     parameters: {},
     output: GOAL_OUTPUT,
     execute(_args, exec) {
@@ -207,6 +209,8 @@ export function apply(ctx: Context, config: Config): void {
   ctx.tools.register(defineTool({
     name: 'create_goal',
     description: CREATE_DESCRIPTION,
+    // Trajectory provenance: names this package as the settled call's owner.
+    pluginOwner: '@deepseek-ai/dsh-tool-goal',
     parameters: {
       objective: {
         type: 'string',
@@ -234,6 +238,8 @@ export function apply(ctx: Context, config: Config): void {
   ctx.tools.register(defineTool({
     name: 'update_goal',
     description: 'Update the current goal.',
+    // Trajectory provenance: names this package as the settled call's owner.
+    pluginOwner: '@deepseek-ai/dsh-tool-goal',
     parameters: {
       goal_id: { type: 'string', required: true, description: 'Exact id returned by get_goal.' },
       revision: { type: 'number', required: true, description: 'Exact positive revision returned by get_goal.' },

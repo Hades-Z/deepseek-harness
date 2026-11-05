@@ -114,6 +114,8 @@ view.activation                        // 'armed' | 'disarmed' — not persisted
 
 `goal/changed` 在持久事件提交后触发，监听器失败会被隔离；载荷携带操作、精确 ref 与最新视图（clear tombstone 时省略）。`goal/activation-changed` 在不改变持久状态的情况下，转发携带精确当前 ref 的进程本地 `armed`／`disarmed` 边界；clear 后则不携带 goal。已准入的续行 Round 通过 `user/message` 事件上的 `GoalMessageSource { goalId, revision, round }` 归属，严格折叠会将其验证为当前 goal 的下一个已准入 Round。
 
+`block` 变更还会额外记录 `blockedRounds { admitted, threshold }`——阻止决定时已准入的续行 Round 数与当时生效的 `maxGoalRounds` 预算。解码器容忍旧日志中缺少该记录的 block 变更，拒绝任何其他操作携带它，并对照 `roundsStarted` 与 `goal.maxGoalRounds` 校验，因此该字段之前写入的日志仍可回放。
+
 </details>
 
 -----

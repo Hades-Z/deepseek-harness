@@ -287,6 +287,8 @@ export function applyGrepTool(ctx: Context, caps: GrepToolCaps): void {
     name: 'grep',
     description: 'Search file contents with a ripgrep regular expression. Returns matching lines with line numbers, grouped by file. '
       + `Returns up to ${caps.maxMatches} matches; a larger result reports where the complete match list was saved.`,
+    // Trajectory provenance: names this package as the settled call's owner.
+    pluginOwner: '@deepseek-ai/dsh-tool-fs-search',
     parameters: {
       pattern: { type: 'string', required: true, description: 'Regular expression to search for (ripgrep syntax).' },
       path: { type: 'string', description: 'File or directory to search. Defaults to the session workspace; a relative path resolves against it.' },

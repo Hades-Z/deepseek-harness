@@ -9,6 +9,9 @@
   ],
   "references": [
     {
+      "path": "../../core/agent-loop"
+    },
+    {
       "path": "../../../vendor/cordis"
     },
     {
@@ -31,6 +34,9 @@
     },
     {
       "path": "../../fs/fs"
+    },
+    {
+      "path": "../../llm/llm"
     }
   ]
 }

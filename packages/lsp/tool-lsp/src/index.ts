@@ -109,6 +109,8 @@ export function apply(ctx: Context, config: Config): void {
     name: 'lsp',
     description:
       'Query a language server for precise code navigation. operation is one of goToDefinition, findReferences, goToImplementation, hover. line and character are one-based UTF-16 cursor coordinates. findReferences includes the declaration.',
+    // Trajectory provenance: names this package as the settled call's owner.
+    pluginOwner: '@deepseek-ai/dsh-tool-lsp',
     parameters: {
       operation: {
         type: 'string',

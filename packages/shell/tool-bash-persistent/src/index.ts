@@ -416,6 +416,8 @@ function registerPersistentBash(ctx: Context, config: ResolvedConfig): void {
   ctx.tools.register(defineTool({
     name: 'bash',
     description: config.description,
+    // Trajectory provenance: names this package as the settled call's owner.
+    pluginOwner: '@deepseek-ai/dsh-tool-bash-persistent',
     parameters: {
       command: {
         type: 'string',

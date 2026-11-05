@@ -32,6 +32,8 @@ kind: "package-reference"
 
 请求包含 agent 时，`ask()` 会通过当前 `AgentRegistry` 验证该 agent 与注册表中的存活实例是同一对象，并且只允许运行时根调用。存活子级不能发起人机交互。不含 agent 的程序化请求仍会交给本地未限定 scope 的 waterfall listener，若无人接受则以 `NO_PROVIDER` 失败。
 
+回答结算后，`ask()` 会向该 agent 的 Session 追加一条只写日志的 `user-question/answered` 审计记录——不属于模型上下文，没有 agent 时不写，被拒绝、中止或超时的提问也不写。记录携带回答内容、结算时间、计时等待的 `callId`（如有）以及 `answeredBy`：实际作答的 listener 在返回回答前，把请求上唯一可写的字段 `answeredBy` 设为自己的稳定标识，服务随即将其复制到记录上；listener 作答而未自报时保持未知。服务从不推断身份。内置应答者自报显式的稳定标识；SDK bridge 仅在自身确为实际应答者时报告 `sdk-host`。对已继续（continued）问题的迟到回复保留其既有持久记录——被引导写入的 `user-question-reply` 用户消息——因此本事件不覆盖该路径。
+
 工具调用开放期间，唯一的回答路径就是这条请求；重新连接的浏览器会再次收到它，仍可完成。调用返回 pending 之后，或拥有它的进程结束之后，问题进入 `continued`：`answer` Remote 方法把回复作为 `user-question-reply` 消息 steer 给 agent。没有任何 Remote 方法会放弃问题——Client 收起面板时不发送任何内容，因此该调用在收到回答前一直可回答。回答已关闭的会话时先恢复其根 agent。两条路径都不会为已结束的工具调用伪造结果。
 
 <a id="role"></a>

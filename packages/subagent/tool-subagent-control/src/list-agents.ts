@@ -85,6 +85,8 @@ export function registerListAgents(ctx: Context): void {
       + 'running means it is working; inactive means it is not currently working. '
       + 'You will be notified when a subagent finishes; there is no need to keep checking its status. '
       + 'Use send_message to continue the conversation.',
+    // Trajectory provenance: names this package as the settled call's owner.
+    pluginOwner: '@deepseek-ai/dsh-tool-subagent-control',
     parameters: {
       scope: {
         type: 'string',

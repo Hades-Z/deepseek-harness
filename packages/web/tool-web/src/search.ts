@@ -362,6 +362,8 @@ export function applyWebSearchTool(
   ctx.tools.register(defineTool({
     name: 'web_search',
     description: 'Search the web for current information. Returns an optional summary answer and a list of source URLs.',
+    // Trajectory provenance: names this package as the settled call's owner.
+    pluginOwner: '@deepseek-ai/dsh-tool-web',
     parameters: {
       queries: {
         type: 'array',

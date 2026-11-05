@@ -960,6 +960,14 @@ describe('native review request', () => {
 
       expect(result.isError).toBe(!item.allowed)
       expect(JSON.stringify(result)).not.toContain('"risk"')
+      const vote = session.snapshotEvents().find(event => event.type === 'tool/pre-execute-decision')
+      expect(vote?.type === 'tool/pre-execute-decision' && vote.data).toMatchObject({
+        listenerId: 'auto-review',
+        callId,
+        toolName: 'probe',
+        decision: item.allowed ? 'allow' : 'ask',
+        ...item.expectedReason === undefined ? {} : { reason: item.expectedReason },
+      })
       if (item.allowed) continue
       expect(result).toMatchObject({ error: { message: 'the user rejected tool "probe"' } })
       expect(approvalReasons.at(-1)).toBe(item.expectedReason === undefined
@@ -1032,6 +1040,10 @@ describe('native review request', () => {
     expect(result).toMatchObject({ isError: true, error: { message: 'downstream guard' } })
     expect(asked).toBe(false)
     expect(probe.runs()).toBe(0)
+    const vote = session.snapshotEvents().find(event => event.type === 'tool/pre-execute-decision')
+    expect(vote?.type === 'tool/pre-execute-decision' && vote.data).toMatchObject({
+      listenerId: 'auto-review', callId, toolName: 'probe', decision: 'deny',
+    })
   })
 
   it('fails every non-protocol result with its specific error instead of a denial', async () => {

@@ -194,7 +194,8 @@ describe('in-process policy inheritance', () => {
         .join('\n')
       expect(systemText).not.toContain('Approval prompts are disabled')
       expect(systemText).not.toContain('You are a delegated subagent')
-      expect(parent.session.snapshotEvents().filter(event => event.type !== 'subagent/catalog')).toHaveLength(parentLogLength)
+      // subagent/run-end is the new log-only run record; it is not a parent turn event.
+      expect(parent.session.snapshotEvents().filter(event => event.type !== 'subagent/catalog' && event.type !== 'subagent/run-end')).toHaveLength(parentLogLength)
     } finally {
       await run.dispose()
     }

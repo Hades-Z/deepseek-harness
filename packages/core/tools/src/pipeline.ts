@@ -1,16 +1,19 @@
 /** Shared tool invocation policy, cancellation, and result settlement. @module */
+import { createHash } from 'node:crypto'
 import type { Context } from '@deepseek-ai/cordis'
 import type { ScopeKey } from '@deepseek-ai/dsh-scope'
 import { scopeTarget } from '@deepseek-ai/dsh-scope'
 import type { ContentBlock } from '@deepseek-ai/dsh-llm'
 import { HarnessError } from '@deepseek-ai/dsh-llm'
-import type { UserMessage } from '@deepseek-ai/dsh-session'
+import type { Session, SessionEventMap, UserMessage } from '@deepseek-ai/dsh-session'
 import type {} from '@deepseek-ai/dsh-user-approval'
 import { assertNever, deepFreeze, snapshotJsonValue, type JsonValue } from '@deepseek-ai/dsh-util-values'
 import { TOOL_ABORTED, TOOL_ABORTED_BEFORE_DISPATCH, ToolNotFoundError, ToolOutputError } from './contracts.ts'
 import { validateJsonSchemaValue } from './json-schema.ts'
 import type { ToolsService } from './index.ts'
 import type { ResolvedToolSet, ToolDefinition, ToolExecutionInput, ToolExecutionMode, ToolExecution, ToolRunContext, ToolExecutionResult, ToolExecutionSuccess, ToolErrorInfo, ToolExecutionToken, PreToolDecision, PostToolDecision } from './contracts.ts'
+import { appendToolLogEvent, type ToolLogEventKey } from './log-events.ts'
+import type { ToolPipelineErrorEventData, ToolResultRewriteStage } from './types.ts'
 
 /** Executor-owned lookup and restrictions applied before extensible execution policy. */
 export interface ToolExecutionSource {
@@ -95,6 +98,9 @@ export class ToolExecutionPipeline {
   /** Execution-prepared content installed before post-execute policy. */
   private contentProjectors = new WeakMap<ToolRunContext, ToolDefinition['projectContent']>()
 
+  /** Owner captured with the definition-owned callbacks. */
+  private contentOwners = new WeakMap<ToolExecution, string | null>()
+
   /**
    * Classify a pending call through the caller's visible tool definition. Only
    * an exact `true` is parallel; unknown, hidden, undeclared, invalid, or
@@ -111,6 +117,18 @@ export class ToolExecutionPipeline {
     } catch {
       return { kind: 'exclusive' }
     }
+  }
+
+  /**
+   * Append one log-only tool-pipeline event under failure containment. A
+   * scheduler that owns an already-committed fact records it here; a failed
+   * append only warns and never changes the scheduler's result or exception.
+   * @param session - the owning agent's session; the append target.
+   * @param type - one of the log-only `tool/*` keys declared in `./types.ts`.
+   * @param build - constructs the payload only when an append will be attempted.
+   */
+  appendLogEvent<T extends ToolLogEventKey>(session: Session, type: T, build: () => SessionEventMap[T]): void {
+    appendToolLogEvent(this.ctx.logger, session, type, build)
   }
 
   private createExecution(exec: ToolExecutionInput): ScheduledToolPreparation | { kind: 'ready'; exec: MutableToolRunContext } {
@@ -135,6 +153,7 @@ export class ToolExecutionPipeline {
       signal,
       ...agent !== undefined ? { agent } : {},
       ...exec.toolSet !== undefined ? { toolSet: exec.toolSet } : {},
+      ...exec.log !== undefined ? { log: exec.log } : {},
       ...parent !== undefined ? { parent } : {},
       ...exec.schema !== undefined ? { schema: exec.schema } : {},
       deferContext(context: UserMessage): void {
@@ -147,6 +166,12 @@ export class ToolExecutionPipeline {
     // Capture callbacks before argument getters run; rejected calls retain finalization only when aborted.
     const capturedFinalizer = visible?.finalizeContent?.bind(visible)
     const capturedProjector = visible?.projectContent?.bind(visible)
+    let owner: string | null = null
+    try {
+      owner = visible?.pluginOwner ?? visible?.name ?? null
+    } catch (error: unknown) {
+      this.ctx.logger.warn(`tool attribution failed: ${toolErrorMessage(error)}`)
+    }
     const finalizerFor = (): ToolDefinition['finalizeContent'] | undefined =>
       rejected && !signal.aborted ? undefined : capturedFinalizer
     try {
@@ -155,6 +180,7 @@ export class ToolExecutionPipeline {
         throw new TypeError('tool execution arguments must be losslessly JSON-serializable')
       }
       const execution: MutableToolRunContext = { ...base, arguments: deepFreeze(detached) }
+      this.contentOwners.set(execution, owner)
       this.deferredContexts.set(execution, deferredContexts)
       this.contentFinalizers.set(execution, finalizerFor())
       if (!rejected) this.contentProjectors.set(execution, capturedProjector)
@@ -176,6 +202,7 @@ export class ToolExecutionPipeline {
       return { kind: 'ready', exec: execution }
     } catch (error: unknown) {
       const execution: MutableToolRunContext = { ...base, arguments: undefined }
+      this.contentOwners.set(execution, owner)
       this.contentFinalizers.set(execution, finalizerFor())
       return { kind: 'final-result', exec: execution, result: toolErrorResult(error) }
     }
@@ -228,6 +255,7 @@ export class ToolExecutionPipeline {
       }
       return { kind: 'dispatch', exec }
     } catch (error: unknown) {
+      this.recordPipelineError(exec, 'pre-execute', error)
       return { kind: 'final-result', exec, result: toolErrorResult(error) }
     }
   }
@@ -320,6 +348,7 @@ export class ToolExecutionPipeline {
           : resultWithDeferredContexts,
       }
     } catch (error: unknown) {
+      this.recordPipelineError(exec, 'execute-wrapper', error)
       return { kind: 'final-result', result: toolErrorResult(error) }
     }
   }
@@ -334,9 +363,10 @@ export class ToolExecutionPipeline {
    * @returns the same materialized result delivered to final observers.
    */
   async complete(exec: ToolRunContext, outcome: ScheduledToolDispatch): Promise<ToolExecutionResult> {
+    const stages: ToolResultRewriteStage[] = []
     switch (outcome.kind) {
       case 'final-result':
-        return this.finish(exec, outcome.result)
+        return this.finish(exec, outcome.result, stages)
       case 'post-result':
         break
       /* v8 ignore next -- closed-union exhaustiveness guard */
@@ -344,56 +374,163 @@ export class ToolExecutionPipeline {
         return assertNever(outcome, 'scheduled tool outcome')
     }
     const { result } = outcome
+    /** Set when a stage already recorded its own failure, so the outer catch does not record it twice. */
+    let recorded = false
     try {
       const project = this.contentProjectors.get(exec)
       this.contentProjectors.delete(exec)
-      const content = project?.(exec, result)
-      const projected = content === undefined
-        ? result
-        : this.markCanonical(exec, this.materializeFinalResult({ ...result, content }))
-      const postResult = await this.postExecute(exec, projected)
+      let content: ContentBlock[] | undefined
+      try {
+        content = project?.(exec, result)
+      } catch (error: unknown) {
+        this.recordPipelineError(exec, 'project', error)
+        recorded = true
+        throw error
+      }
+      let projected = result
+      if (content !== undefined) {
+        projected = this.markCanonical(exec, this.materializeFinalResult({ ...result, content }))
+        this.captureRewriteStage(stages, () => ({
+          stage: 'project',
+          beforeDigest: contentDigest(result.content),
+          digest: contentDigest(content),
+          replacedField: 'content',
+          listenerId: this.definitionOwner(exec),
+        }))
+      }
+      const postResult = await this.postExecute(exec, projected, stages)
       return this.finish(
         exec,
         this.callerCancelled(exec) && !postResult.isError
           ? this.cancellationResult(exec, postResult)
           : postResult,
+        stages,
       )
     } catch (error: unknown) {
-      return this.finish(exec, toolErrorResult(error))
+      // A stage that already recorded its own failure rethrew without needing
+      // this outer boundary to attribute it again.
+      if (!recorded) this.recordPipelineError(exec, 'post-execute', error)
+      return this.finish(exec, toolErrorResult(error), stages)
     }
   }
 
   /**
    * Materialize the candidate, apply definition-owned content finalization,
-   * then materialize and notify the authoritative result.
+   * then materialize, record, and notify the authoritative result.
    * @param exec - the prepared execution.
    * @param result - final result.
+   * @param stages - rewrites recorded so far, extended here when finalization replaces content.
    * @returns the materialized final result.
    * @internal
    */
-  private finish(exec: ToolRunContext, result: ToolExecutionResult): ToolExecutionResult {
+  private finish(
+    exec: ToolRunContext,
+    result: ToolExecutionResult,
+    stages: ToolResultRewriteStage[],
+  ): ToolExecutionResult {
     let materializedResult: ToolExecutionResult
     try {
       materializedResult = this.materializeFinalResult(result)
     } catch (error: unknown) {
+      this.recordPipelineError(exec, 'finalize', error)
       materializedResult = this.materializeFinalResult(toolErrorResult(error))
     }
     let finalResult: ToolExecutionResult
     try {
-      finalResult = this.materializeFinalResult(this.applyFinalContent(exec, materializedResult))
+      const finalized = this.applyFinalContent(exec, materializedResult)
+      finalResult = this.materializeFinalResult(finalized.result)
+      if (finalized.rewritten !== undefined) {
+        const rewritten = finalized.rewritten
+        this.captureRewriteStage(stages, () => ({
+          stage: 'finalize',
+          beforeDigest: contentDigest(materializedResult.content),
+          digest: contentDigest(rewritten),
+          replacedField: 'content',
+          listenerId: this.definitionOwner(exec),
+        }))
+      }
     } catch (error: unknown) {
+      this.recordPipelineError(exec, 'finalize', error)
       finalResult = this.materializeFinalResult(toolErrorResult(error))
     }
+    this.recordResultRewrite(exec, stages)
     this.notifyResult(exec, finalResult)
     return finalResult
   }
 
   /** Apply the snapshotted tool-owned content transform without exposing other result fields. */
-  private applyFinalContent(exec: ToolRunContext, result: ToolExecutionResult): ToolExecutionResult {
+  private applyFinalContent(
+    exec: ToolRunContext,
+    result: ToolExecutionResult,
+  ): { result: ToolExecutionResult; rewritten: ContentBlock[] | undefined } {
     const finalizeContent = this.contentFinalizers.get(exec)
-    if (finalizeContent === undefined) return result
+    if (finalizeContent === undefined) return { result, rewritten: undefined }
     const content = finalizeContent(exec, result)
-    return content === undefined ? result : { ...result, content }
+    return content === undefined ? { result, rewritten: undefined } : { result: { ...result, content }, rewritten: content }
+  }
+
+  /**
+   * Name the definition that owns a content callback for this call.
+   * `projectContent` and `finalizeContent` are declared by the tool definition,
+   * so the rewriting component is that tool: its declared `pluginOwner`, or the
+   * tool name when the definition declares no owner.
+   * @param exec - the execution whose result a definition-owned callback rewrote.
+   * @returns the captured plugin id or tool name, or null if unavailable.
+   */
+  private definitionOwner(exec: ToolExecution): string | null {
+    return this.contentOwners.get(exec) ?? null
+  }
+
+  /**
+   * Record one internal stage-boundary failure under containment.
+   * @param exec - the execution whose stage failed.
+   * @param stage - the internal boundary that caught the failure.
+   * @param error - the caught value.
+   */
+  private recordPipelineError(exec: ToolExecution, stage: ToolPipelineErrorEventData['stage'], error: unknown): void {
+    const session = exec.agent?.session
+    if (session === undefined) return
+    // Only the definition-owned stages have a nameable thrower; a waterfall
+    // listener or an execute wrapper is anonymous on this seam.
+    const definitionOwned = stage === 'project' || stage === 'finalize'
+    appendToolLogEvent(this.ctx.logger, session, 'tool/pipeline-error', () => ({
+      sessionId: session.id,
+      turn: exec.log?.turn ?? null,
+      step: exec.log?.step ?? null,
+      callId: exec.callId,
+      stage,
+      message: toolErrorMessage(error),
+      error: error instanceof HarnessError ? { name: error.name, code: error.code } : null,
+      thrower: definitionOwned ? this.definitionOwner(exec) : null,
+    }))
+  }
+
+  private captureRewriteStage(stages: ToolResultRewriteStage[], build: () => ToolResultRewriteStage): void {
+    try {
+      stages.push(build())
+    } catch (error: unknown) {
+      this.ctx.logger.warn(`tool result rewrite observation failed: ${toolErrorMessage(error)}`)
+    }
+  }
+
+  /**
+   * Record one settled result's stage-level rewrites under failure containment.
+   * One event per result, stages in pipeline order; nothing is recorded when no
+   * stage replaced content or the execution has no owning Session.
+   * @param exec - the execution whose result settled.
+   * @param stages - rewrites observed while settling it.
+   */
+  private recordResultRewrite(exec: ToolExecution, stages: readonly ToolResultRewriteStage[]): void {
+    if (stages.length === 0) return
+    const session = exec.agent?.session
+    if (session === undefined) return
+    appendToolLogEvent(this.ctx.logger, session, 'tool/result-rewrite', () => ({
+      sessionId: session.id,
+      turn: exec.log?.turn ?? null,
+      step: exec.log?.step ?? null,
+      callId: exec.callId,
+      stages,
+    }))
   }
 
   /** Notify observers without exposing a mutation or error channel into the outcome. */
@@ -419,6 +556,32 @@ export class ToolExecutionPipeline {
   }
 
   /**
+   * Record an ask that degraded before the approval seam ran, without affecting
+   * the deny it accompanies. An agent-less execution owns no Session, so the
+   * record is skipped rather than attached elsewhere.
+   * @param exec - the execution whose ask degraded.
+   * @param reason - the missing precondition.
+   * @param askReason - the asking policy's own reason, when supplied.
+   */
+  private recordApprovalUnavailable(
+    exec: ToolExecution,
+    reason: 'no-approval-service' | 'no-agent',
+    askReason: string | null,
+  ): void {
+    const session = exec.agent?.session
+    if (session === undefined) return
+    appendToolLogEvent(this.ctx.logger, session, 'approval/unavailable', () => ({
+      sessionId: session.id,
+      turn: exec.log?.turn ?? null,
+      step: exec.log?.step ?? null,
+      callId: exec.callId,
+      toolName: exec.name,
+      reason,
+      askReason,
+    }))
+  }
+
+  /**
    * Resolve an `ask` decision to allow/deny through the approval seam. The
    * seam is consumed opportunistically with `ctx.get('approval')` — a
    * deployment that composes no ApprovalService keeps the historical degrade
@@ -435,12 +598,14 @@ export class ToolExecutionPipeline {
   ): Promise<ToolAskResolution> {
     const approval = this.ctx.get('approval')
     if (approval === undefined) {
+      this.recordApprovalUnavailable(exec, 'no-approval-service', ask.reason ?? null)
       return {
         decision: { kind: 'deny', reason: ask.reason ?? `tool "${exec.name}" requires approval (not yet supported)` },
         approvalCancelled: false,
       }
     }
     if (exec.agent === undefined) {
+      this.recordApprovalUnavailable(exec, 'no-agent', ask.reason ?? null)
       return {
         decision: { kind: 'deny', reason: `tool "${exec.name}" requires approval, but the call has no agent to route it through` },
         approvalCancelled: false,
@@ -483,7 +648,11 @@ export class ToolExecutionPipeline {
    * blocking decision explicitly supplied.
    * Runs inside `execute`'s outer try/catch (a throwing listener → isError).
    */
-  private async postExecute(exec: ToolExecution, result: ToolExecutionResult): Promise<ToolExecutionResult> {
+  private async postExecute(
+    exec: ToolExecution,
+    result: ToolExecutionResult,
+    stages: ToolResultRewriteStage[],
+  ): Promise<ToolExecutionResult> {
     const decision = await this.ctx.waterfall(
       scopeTarget(this.tools, exec.agent), 'tools/post-execute', exec, result,
       () => Promise.resolve<PostToolDecision>({ kind: 'accept' }),
@@ -491,12 +660,20 @@ export class ToolExecutionPipeline {
     const decisionContexts = decision.additionalContexts ?? []
     if (decision.kind === 'block') {
       const message = failureMessageFromContent(decision.feedback)
-      return this.markCanonical(exec, {
+      const blocked = this.markCanonical(exec, {
         content: decision.feedback,
         isError: true,
         error: { message },
         ...decisionContexts.length > 0 ? { additionalContexts: decisionContexts } : {},
       })
+      this.captureRewriteStage(stages, () => ({
+        stage: 'post-execute',
+        beforeDigest: contentDigest(result.content),
+        digest: contentDigest(blocked.content),
+        replacedField: 'content',
+        listenerId: null,
+      }))
+      return blocked
     }
     if (Object.hasOwn(decision, 'content') && Object.hasOwn(decision, 'value')) {
       throw new TypeError('tools/post-execute accept decision cannot replace both value and content')
@@ -512,16 +689,34 @@ export class ToolExecutionPipeline {
       const tool = this.resolveExecution(exec.name, exec.agent, exec.parent !== undefined, exec.toolSet)
       if (tool === undefined) throw new ToolNotFoundError(exec.name)
       const replaced = this.createSuccessResult(exec, tool, decision.value)
-      return this.markCanonical(exec, {
+      const next = this.markCanonical(exec, {
         ...replaced,
         ...additionalContexts.length > 0 ? { additionalContexts } : {},
       })
+      this.captureRewriteStage(stages, () => ({
+        stage: 'post-execute',
+        beforeDigest: contentDigest(result.content),
+        digest: contentDigest(next.content),
+        replacedField: 'value',
+        listenerId: null,
+      }))
+      return next
     }
-    return this.markCanonical(exec, {
+    const next = this.markCanonical(exec, {
       ...result,
       ...decision.content !== undefined ? { content: decision.content } : {},
       ...additionalContexts.length > 0 ? { additionalContexts } : {},
     })
+    if (decision.content !== undefined) {
+      this.captureRewriteStage(stages, () => ({
+        stage: 'post-execute',
+        beforeDigest: contentDigest(result.content),
+        digest: contentDigest(next.content),
+        replacedField: 'content',
+        listenerId: null,
+      }))
+    }
+    return next
   }
 
   /** Registry-normalized results and the exact dispatch that validated each value. */
@@ -609,6 +804,15 @@ export class ToolExecutionPipeline {
 /** Convert one projector exception into the canonical invalid-output failure. */
 function projectionError(toolName: string, projector: 'render' | 'presentationMeta', error: unknown): ToolOutputError {
   return new ToolOutputError(toolName, [`output.${projector} failed: ${toolErrorMessage(error)}`])
+}
+
+/**
+ * Digest one stage's replacement content so a replay can match the rewrite.
+ * @param content - the stage's replacement content blocks.
+ * @returns the SHA-256 hex digest of the JSON-encoded blocks.
+ */
+function contentDigest(content: readonly ContentBlock[]): string {
+  return createHash('sha256').update(JSON.stringify(content)).digest('hex')
 }
 
 /** Snapshot one projector result before later durable-result materialization. */

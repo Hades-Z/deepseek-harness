@@ -72,11 +72,16 @@ One `tools/execute` listener reads the dispatched tool's declared limit from the
 
 Multiple `tools/execute` listeners compose by Cordis registration order, which chooses the semantics: the timeout registered outer covers a whole retry operation, the timeout registered inner covers each attempt.
 
+### Deadline-transition records
+
+After each transition — arm, fire, restore — the wrapper appends a non-surface `tool/execute-deadline` record to the call's Session, so a trajectory consumer can observe the timer ownership and signal swap that no public event exposes. The record carries `callId`, `name`, `sessionId`, `state` (`armed` | `fired` | `restored`), and `timeoutMs` (the elapsed budget for `fired`, otherwise the declared budget). Each append happens after the business commit it records — after the signal swap for `armed`, after building the `TOOL_TIMEOUT` result for `fired`, after the signal restore for `restored` — and is contained: a failed append only warns and never changes the returned result or the propagated exception. A dispatch with no agent has no Session to record against, so nothing is written. The record carries no `turn`/`step` because the `tools/execute` payload has no step identity; a trajectory consumer joins them from its own call-id → turn/step association.
+
 ### Source map
 
 | File | Role |
 |---|---|
 | [`src/index.ts`](src/index.ts) | Plugin entry: `TOOL_TIMEOUT`, `name`/`inject`/`apply`, the `tools/execute` wrapper |
+| [`src/types.ts`](src/types.ts) | `tool/execute-deadline` record payload and its `SessionEventMap` declaration merge |
 
 </details>
 

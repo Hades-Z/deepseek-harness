@@ -22,6 +22,18 @@ import type {
   TextBlock,
   WebSearchToolResultBlock,
 } from './types.ts'
+import {
+  anthropicAttempt,
+  endpointCandidates,
+  isProtocolMismatch,
+  openaiAttempt,
+  readAnthropicAnswer,
+  readOpenAIAnswer,
+  type SearchAnswer,
+  type SearchAttempt,
+  type SearchProtocol,
+  type SearchProtocolSetting,
+} from './protocol.ts'
 
 /** Stable id this provider registers under. */
 export const DEEPSEEK_PROVIDER_ID = 'deepseek-official'
@@ -93,6 +105,17 @@ declare module '@deepseek-ai/dsh-session/types' {
 /** Resolved provider options (the plugin's `apply` supplies credential and constant defaults). */
 export interface DeepSeekSearchProviderOptions {
   /**
+   * Wire dialect to speak: a fixed one, or `auto` to probe once and remember.
+   *
+   * An Anthropic-compatible endpoint answers `/v1/messages` with the
+   * `web_search_20250305` server tool. An OpenAI-compatible gateway answers
+   * `/v1/responses` with `tools: [{ type: 'web_search' }]`, and a gateway whose
+   * `/v1/messages` accepts the request but ignores the tool returns confident
+   * prose instead of running a search — `auto` recognizes that answer, treats
+   * it as a wrong dialect, and tries the other. Omitted means `auto`.
+   */
+  protocol?: SearchProtocolSetting
+  /**
    * Resolve the DeepSeek account token for one search endpoint. A token takes
    * precedence over every API key and is sent only as `x-dsh-auth-token`;
    * `undefined` selects API-key authentication.
@@ -154,6 +177,17 @@ export function citationSnippets(blocks: readonly ContentBlock[]): Map<string, s
  * @returns the normalized result with deduped, snippet-joined sources.
  * @throws {@link WebError} when native search produced no result block.
  */
+function toResult(answer: SearchAnswer): WebSearchResult {
+  return {
+    ...answer.text.length > 0 ? { content: answer.text } : {},
+    sources: answer.sources.map(source => ({
+      url: source.url,
+      ...source.title !== undefined ? { title: source.title } : {},
+    })),
+    truncated: false,
+  }
+}
+
 export function mapAnthropicResponse(response: AnthropicResponse): WebSearchResult {
   const blocks = response.content ?? []
   const resultBlocks = blocks.filter(
@@ -209,6 +243,13 @@ export class DeepSeekSearchProvider implements WebSearchProvider {
    */
   constructor(private readonly resolveOptions: () => DeepSeekSearchProviderOptions) {}
 
+  /**
+   * Dialect that answered last, once one has. Undefined means the next search
+   * probes: an Anthropic-compatible endpoint rejects the Responses shape and a
+   * gateway rejects the Messages shape, so the first search costs a rejection.
+   */
+  private known: SearchProtocol | undefined
+
   available(): boolean {
     const options = this.resolveOptions()
     return ((options.apiKey?.length ?? 0) > 0 || options.resolveApiKey !== undefined || options.resolveAccountToken !== undefined)
@@ -222,81 +263,143 @@ export class DeepSeekSearchProvider implements WebSearchProvider {
     // settings write landing inside that await must not send the key resolved
     // from the old section to the endpoint named by the new one.
     const options = this.resolveOptions()
-    const endpoint = `${options.baseURL}/messages`
-    const auth = await this.authHeaders(options, endpoint, signal)
-    throwIfSearchAborted(signal)
-    const body: DeepSeekSearchLlmRequest['body'] = {
-      model: options.model,
-      max_tokens: options.maxTokens,
-      messages: [{
-        role: 'user',
-        content: [{ type: 'text', text: `Perform a web search for the query: ${request.query}` }],
-      }],
-      tools: [{ type: 'web_search_20250305', name: 'web_search', max_uses: options.maxUses }],
-      thinking: { type: 'disabled' },
-    }
-    options.recordRequest?.({
-      endpoint,
-      apiVersion: options.apiVersion,
-      body,
-    })
-    throwIfSearchAborted(signal)
-    let response: Response
-    try {
-      response = await fetch(endpoint, {
-        method: 'POST',
-        redirect: 'error',
-        headers: {
-          ...auth.headers,
-          'anthropic-version': options.apiVersion,
-          'content-type': 'application/json',
-          'accept': 'application/json',
-          'user-agent': USER_AGENT,
-        },
-        body: JSON.stringify(body),
-        ...signal !== undefined ? { signal } : {},
+    const attempts = this.plan(options, request.query)
+    let firstFailure: WebError | undefined
+
+    for (const attempt of attempts) {
+      throwIfSearchAborted(signal)
+      const auth = await this.authHeaders(options, attempt.endpoint, signal)
+      throwIfSearchAborted(signal)
+      // The Anthropic dialect carries the thinking switch; the Responses API
+      // takes no equivalent, so it is not added to that body.
+      const body = attempt.protocol === 'anthropic'
+        ? { ...attempt.body, thinking: { type: 'disabled' } }
+        : attempt.body
+      options.recordRequest?.({
+        endpoint: attempt.endpoint,
+        apiVersion: options.apiVersion,
+        body: body as DeepSeekSearchLlmRequest['body'],
       })
-    } catch (error: unknown) {
-      if (signal?.aborted === true || isAbortError(error)) throw searchAborted(signal, error)
-      throw searchEndpointError(
-        endpoint,
-        `DeepSeek search request failed: ${String(error)}`,
-        error,
-      )
-    }
+      throwIfSearchAborted(signal)
 
-    if (!response.ok) {
-      const status = response.status
-      let message = `DeepSeek API error (HTTP ${status})`
+      let response: Response
       try {
-        const parsed = await response.json() as AnthropicError
-        const detail = typeof parsed.error === 'string' ? parsed.error : parsed.error?.message ?? parsed.message
-        if (detail !== undefined && detail.length > 0) message += `: ${detail}`
+        response = await fetch(attempt.endpoint, {
+          method: 'POST',
+          redirect: 'error',
+          headers: {
+            ...auth.headers,
+            ...attempt.headers,
+            'content-type': 'application/json',
+            'accept': 'application/json',
+            'user-agent': USER_AGENT,
+          },
+          body: JSON.stringify(body),
+          ...signal !== undefined ? { signal } : {},
+        })
       } catch (error: unknown) {
-        // An abort fired mid-body must surface as WEB_ABORTED, not be swallowed
-        // into a generic HTTP-error message — cancellation is not a provider
-        // error (the seam's cancellation contract).
         if (signal?.aborted === true || isAbortError(error)) throw searchAborted(signal, error)
-        // Otherwise: the HTTP status is already captured in `message` above; a
-        // malformed/non-JSON error body (normal for gateway 5xx/429s) can only
-        // cost a richer provider message, never the real error.
+        throw searchEndpointError(
+          attempt.endpoint,
+          `DeepSeek search request failed: ${String(error)}`,
+          error,
+        )
       }
-      // The account service released this token only for its inference
-      // origin, so the endpoint is not what the user must change.
-      if (status === 401 && auth.kind === 'account') throw accountRejectedError(message)
-      throw searchEndpointError(endpoint, message)
+
+      if (!response.ok) {
+        const status = response.status
+        const message = await this.errorMessage(response, status, signal)
+        if (status === 401 && auth.kind === 'account') throw accountRejectedError(message)
+        if (isProtocolMismatch(status) || (status === 503 && message.includes('model_not_found'))) {
+          // The dialect, not the search, is wrong: nothing ran, so the next
+          // candidate is a fair retry rather than a duplicate query.
+          firstFailure ??= searchEndpointError(attempt.endpoint, message)
+          continue
+        }
+        throw searchEndpointError(attempt.endpoint, message)
+      }
+
+      try {
+        const payload = await response.json() as unknown
+        const answer = attempt.protocol === 'anthropic'
+          ? readAnthropicAnswer(payload)
+          : readOpenAIAnswer(payload)
+        this.remember(attempt.protocol)
+        return toResult(answer)
+      } catch (error: unknown) {
+        if (signal?.aborted === true || isAbortError(error)) throw searchAborted(signal, error)
+        // A dialect that answers without searching ignored the tool rather than
+        // running it — the gateway returns a confident prose answer instead of
+        // an error. Trying the next dialect is what makes a gateway switch
+        // transparent; a body that truly did not parse is a real failure.
+        if (error instanceof Error && error.message.includes('without issuing a web search')) {
+          firstFailure ??= searchEndpointError(
+            attempt.endpoint,
+            `the endpoint answered this ${attempt.protocol} request without running a search`,
+          )
+          continue
+        }
+        const message = error instanceof WebError
+          ? error.message
+          : `DeepSeek returned an unprocessable response body: ${String(error)}`
+        throw searchEndpointError(attempt.endpoint, message, error)
+      }
     }
 
+    throw firstFailure ?? searchEndpointError(
+      options.baseURL,
+      'no search dialect could run against this endpoint',
+    )
+  }
+
+  /**
+   * The requests this provider may send, in the order it will try them.
+   *
+   * A deployment can move between an Anthropic-compatible endpoint and an
+   * OpenAI-compatible gateway when its base URL or key changes, so `auto` tries
+   * both and keeps whichever answered: the probe costs one rejected request,
+   * and every later search goes straight to the working dialect.
+   * @param options - the operation's option snapshot.
+   * @param query - the search query to send.
+   * @returns candidate attempts, the remembered dialect first.
+   */
+  private plan(options: DeepSeekSearchProviderOptions, query: string): SearchAttempt[] {
+    const setting: SearchProtocolSetting = options.protocol ?? 'auto'
+    const build = (protocol: SearchProtocol): SearchAttempt[] => endpointCandidates(options.baseURL)
+      .map(root => protocol === 'anthropic'
+        ? anthropicAttempt(root, options.model, query, {
+          maxTokens: options.maxTokens,
+          maxUses: options.maxUses,
+          apiVersion: options.apiVersion,
+        })
+        : openaiAttempt(root, options.model, query, { maxTokens: options.maxTokens }))
+    if (setting !== 'auto') return build(setting)
+    if (this.known === undefined) return [...build('anthropic'), ...build('openai-responses')]
+    return build(this.known)
+  }
+
+  /** Remember which dialect answered, so later searches skip the probe. */
+  private remember(protocol: SearchProtocol): void {
+    this.known = protocol
+  }
+
+  /** Read one failed response's detail without losing an abort raised mid-body. */
+  private async errorMessage(response: Response, status: number, signal?: AbortSignal): Promise<string> {
+    let message = `DeepSeek API error (HTTP ${status})`
     try {
-      const payload = await response.json() as AnthropicResponse
-      return mapAnthropicResponse(payload)
+      const parsed = await response.json() as AnthropicError
+      const detail = typeof parsed.error === 'string' ? parsed.error : parsed.error?.message ?? parsed.message
+      if (detail !== undefined && detail.length > 0) message += `: ${detail}`
     } catch (error: unknown) {
+      // An abort fired mid-body must surface as WEB_ABORTED, not be swallowed
+      // into a generic HTTP-error message — cancellation is not a provider
+      // error (the seam's cancellation contract).
       if (signal?.aborted === true || isAbortError(error)) throw searchAborted(signal, error)
-      const message = error instanceof WebError
-        ? error.message
-        : `DeepSeek returned an unprocessable response body: ${String(error)}`
-      throw searchEndpointError(endpoint, message, error)
+      // Otherwise: the HTTP status is already captured in `message` above; a
+      // malformed/non-JSON error body (normal for gateway 5xx/429s) can only
+      // cost a richer provider message, never the real error.
     }
+    return message
   }
 
   /**

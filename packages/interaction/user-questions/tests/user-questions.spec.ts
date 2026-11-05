@@ -8,7 +8,7 @@ import UserQuestionService, {
   type AskUserQuestionRequest,
 } from '@deepseek-ai/dsh-user-questions'
 import { createToolResultMessage, createUserMessage, ToolCallId, type ToolSchema, type UserMessage } from '@deepseek-ai/dsh-llm'
-import { Session, SessionId, TOOL_OUTCOME_UNKNOWN } from '@deepseek-ai/dsh-session'
+import { Session, SessionEvent, SessionId, TOOL_OUTCOME_UNKNOWN } from '@deepseek-ai/dsh-session'
 import SessionProjectionRegistry from '@deepseek-ai/dsh-session-projection'
 
 interface QuestionAnswerer {
@@ -950,5 +950,130 @@ describe('fixed approval presentation', () => {
       ...(kind === 'timed' ? { wait: { callId: ToolCallId('call') } } : {}),
     })).rejects.toMatchObject({ code: 'BAD_INTENT', message })
     expect(p.seen).toEqual([])
+  })
+})
+
+describe('user-question/answered audit record', () => {
+  /** A live root over a REAL Session, so the settled record is observable on the log. */
+  async function liveContext(): Promise<{ ctx: Context; agent: LiveAgent }> {
+    const ctx = await timedContext()
+    const agent = liveAgent('answered-audit')
+    ctx.agents.enter(agent, undefined)
+    return { ctx, agent }
+  }
+
+  function answeredRecords(agent: LiveAgent): SessionEvent<'user-question/answered'>[] {
+    return agent.session.snapshotEvents()
+      .filter((event): event is SessionEvent<'user-question/answered'> => event.type === 'user-question/answered')
+  }
+
+  it('records the settled answer on the agent session after a successful ask', async () => {
+    const { ctx, agent } = await liveContext()
+    registerAnswerer(ctx, provider('Tool only'))
+
+    await expect(ctx.userQuestions.ask({ agent, questions: timedQuestions }))
+      .resolves.toEqual({ answers: [{ id: 'scope', selected: ['Tool only'] }] })
+
+    const [record] = answeredRecords(agent)
+    expect(Object.keys(record?.data ?? {}).sort()).toEqual(['answeredAt', 'answers'])
+    expect(record?.data.answers).toEqual([{ id: 'scope', selected: ['Tool only'] }])
+    expect(record?.data.answeredAt).toEqual(expect.any(Number))
+    await ctx.fiber.dispose()
+  })
+
+  it('carries the timed wait callId and the answering listener self-report', async () => {
+    const { ctx, agent } = await liveContext()
+    ctx.on('user-questions/request', (request, next) => {
+      request.answeredBy = 'test-suite'
+      return next()
+    })
+    registerAnswerer(ctx, provider('Tool only'))
+
+    await expect(ctx.userQuestions.askTimed({ agent, questions: timedQuestions }, timedCallId, 120_000))
+      .resolves.toEqual({ answers: [{ id: 'scope', selected: ['Tool only'] }] })
+
+    const [record] = answeredRecords(agent)
+    expect(record?.data).toEqual({
+      callId: timedCallId,
+      answers: [{ id: 'scope', selected: ['Tool only'] }],
+      answeredBy: 'test-suite',
+      answeredAt: expect.any(Number),
+    })
+    await ctx.fiber.dispose()
+  })
+
+  it('stays silent when no answerer claims the request (NO_PROVIDER)', async () => {
+    const { ctx, agent } = await liveContext()
+
+    await expect(ctx.userQuestions.ask({ agent, questions: timedQuestions }))
+      .rejects.toMatchObject({ code: 'NO_PROVIDER' })
+
+    expect(answeredRecords(agent)).toHaveLength(0)
+    await ctx.fiber.dispose()
+  })
+
+  it('stays silent when the answerer rejects the request', async () => {
+    const { ctx, agent } = await liveContext()
+    const failure = new Error('provider failed')
+    registerAnswerer(ctx, { ask: () => Promise.reject(failure) })
+
+    await expect(ctx.userQuestions.ask({ agent, questions: timedQuestions })).rejects.toBe(failure)
+
+    expect(answeredRecords(agent)).toHaveLength(0)
+    await ctx.fiber.dispose()
+  })
+
+  it('keeps the settled answer and warn-logs when the record append fails', async () => {
+    const { ctx, agent } = await liveContext()
+    registerAnswerer(ctx, provider('Tool only'))
+    const warn = vi.spyOn(ctx.logger, 'warn').mockImplementation(() => {})
+    const failure = new Error('append failed before log growth')
+    vi.spyOn(agent.session, 'append').mockImplementation(() => { throw failure })
+
+    await expect(ctx.userQuestions.ask({ agent, questions: timedQuestions }))
+      .resolves.toEqual({ answers: [{ id: 'scope', selected: ['Tool only'] }] })
+
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining('user-question/answered'), failure)
+    await ctx.fiber.dispose()
+  })
+
+  it('records nothing for an agent-less ask (no Session to record against)', async () => {
+    const ctx = new Context()
+    onTestFinished(() => ctx.fiber.dispose())
+    await ctx.plugin(UserQuestionService)
+    registerAnswerer(ctx, provider('yes'))
+
+    await expect(ctx.userQuestions.ask({ questions: [{ id: 'confirm', question: 'Proceed?' }] }))
+      .resolves.toEqual({ answers: [{ id: 'confirm', selected: ['yes'] }] })
+  })
+
+  it('never records the late-reply path, whose durable record stays the steered user message', async () => {
+    const { ctx, agent } = await liveContext()
+    const schema: ToolSchema = {
+      name: 'ask_user_question', description: 'Ask brief questions.',
+      parameters: { type: 'object', properties: { questions: { type: 'array' }, [TIMED_WAIT_PARAMETER]: { type: 'integer' } } },
+    }
+    agent.session.append('turn/start', { turn: 1 })
+    agent.session.append('step/start', { turn: 1, step: 1 })
+    agent.session.append('request/header', {
+      header: { config: { provider: 'deepseek-official', model: 'deepseek-v4-flash' }, tools: [schema] },
+      reason: 'initial',
+    })
+    agent.session.append('tool/call', {
+      turn: 1, step: 1, callId: timedCallId, name: 'ask_user_question',
+      arguments: JSON.stringify({ questions: timedQuestions }),
+    })
+    agent.session.append('tool/result', {
+      turn: 1, step: 1,
+      message: createToolResultMessage({
+        callId: timedCallId, content: [{ type: 'text', text: JSON.stringify({ pending: true, callId: timedCallId }) }], isError: false,
+      }),
+    }, { surfaceOp: 'append' })
+
+    expect(ctx.userQuestions.answer(agent, timedCallId, { answers: [{ id: 'scope', selected: ['Tool only'] }] })).toBe(true)
+
+    expect(answeredRecords(agent)).toHaveLength(0)
+    expect(agent.steer).toHaveBeenCalledOnce()
+    await ctx.fiber.dispose()
   })
 })

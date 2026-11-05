@@ -31,6 +31,8 @@ export function apply(ctx: Context): void {
     description:
       'Send a message to an agent. A working agent receives it at its next step; an idle agent starts a new turn with it. '
       + 'Returns delivery confirmation, not the agent\'s answer.',
+    // Trajectory provenance: names this package as the settled call's owner.
+    pluginOwner: '@deepseek-ai/dsh-tool-subagent-control',
     parameters: {
       agent_id: {
         type: 'string',
@@ -78,6 +80,8 @@ export function apply(ctx: Context): void {
       'Ask a subagent to stop its current work. This call returns without waiting for it to stop. '
       + 'You can continue a local direct child\'s conversation later with send_message. '
       + 'External executions stop permanently and cannot receive follow-ups. Subagents it started will keep running.',
+    // Trajectory provenance: names this package as the settled call's owner.
+    pluginOwner: '@deepseek-ai/dsh-tool-subagent-control',
     parameters: {
       agent_id: {
         type: 'string',

@@ -1,0 +1,85 @@
+# Bilingual-pair consistency record for agent-trajectory-minimal-intrusion-plan.md (docs/i18n/README.md): per heading
+# section, a hash of its English and Chinese blocks outside code blocks and generated regions.
+# After editing either side, bring the other along and re-record with:
+#   pnpm run verify-translation-pairing --write docs/loggs/agent-trajectory-minimal-intrusion-plan.md
+/deepseek-harness-agent-trajectory-instrumentation-probe-first-point-fixes-technical-plan:
+  en: c33c51a8db089c8d
+  zh: 1cb2fda55c644ba9
+/deepseek-harness-agent-trajectory-instrumentation-probe-first-point-fixes-technical-plan/execution-conventions:
+  en: 388832ba2dedf003
+  zh: 1558d5429276d5bd
+/deepseek-harness-agent-trajectory-instrumentation-probe-first-point-fixes-technical-plan/requirements-review:
+  en: bc9959dd5bd0b647
+  zh: de5af8a8ed2b85bb
+/deepseek-harness-agent-trajectory-instrumentation-probe-first-point-fixes-technical-plan/requirements-review/scope:
+  en: 20803cf3cb1b83a6
+  zh: 12a474d467e60695
+/deepseek-harness-agent-trajectory-instrumentation-probe-first-point-fixes-technical-plan/requirements-review/principles-and-decision-rules:
+  en: 00eabb053c986417
+  zh: c65bfc6a92994516
+/deepseek-harness-agent-trajectory-instrumentation-probe-first-point-fixes-technical-plan/requirements-review/trade-offs:
+  en: da466c2f8aa2d48c
+  zh: 1bdff7f983363151
+/deepseek-harness-agent-trajectory-instrumentation-probe-first-point-fixes-technical-plan/requirements-review/completion-criteria:
+  en: 845c2b62a9a1b75b
+  zh: a407fb182a9c03a4
+/deepseek-harness-agent-trajectory-instrumentation-probe-first-point-fixes-technical-plan/overall-architecture:
+  en: 70239bee81e5dabf
+  zh: ad60bd01bc7feb50
+/deepseek-harness-agent-trajectory-instrumentation-probe-first-point-fixes-technical-plan/overall-architecture/components:
+  en: 404025dbcd8361ab
+  zh: 99b70df4c374c5a2
+/deepseek-harness-agent-trajectory-instrumentation-probe-first-point-fixes-technical-plan/overall-architecture/data-flow:
+  en: 62da375cf8560184
+  zh: 210096dca5e24446
+/deepseek-harness-agent-trajectory-instrumentation-probe-first-point-fixes-technical-plan/overall-architecture/record-contract:
+  en: 2bc9941c582417bc
+  zh: 8bd87147255f89ef
+/deepseek-harness-agent-trajectory-instrumentation-probe-first-point-fixes-technical-plan/external-probe-design:
+  en: 30ec5c3eb5070241
+  zh: 8558cdab27e062c0
+/deepseek-harness-agent-trajectory-instrumentation-probe-first-point-fixes-technical-plan/external-probe-design/package-and-mounting:
+  en: 29c865ab5d33f982
+  zh: 21efcc830000d673
+/deepseek-harness-agent-trajectory-instrumentation-probe-first-point-fixes-technical-plan/external-probe-design/structure:
+  en: 94563ac5bf9e17e9
+  zh: 46acc4c9d72f9ee1
+/deepseek-harness-agent-trajectory-instrumentation-probe-first-point-fixes-technical-plan/external-probe-design/transparent-observation:
+  en: 532df6f581a74eae
+  zh: ea2a1ce09fd9b8a3
+/deepseek-harness-agent-trajectory-instrumentation-probe-first-point-fixes-technical-plan/external-probe-design/failure-boundaries:
+  en: 5a51e545924d4cab
+  zh: e10401666b24540c
+/deepseek-harness-agent-trajectory-instrumentation-probe-first-point-fixes-technical-plan/probe-first-coverage:
+  en: 8b95864e8a175ab7
+  zh: 3d8a2ab700851e3a
+/deepseek-harness-agent-trajectory-instrumentation-probe-first-point-fixes-technical-plan/point-fixes:
+  en: d098baf32e3b8f7f
+  zh: 117ed0f8f939097f
+/deepseek-harness-agent-trajectory-instrumentation-probe-first-point-fixes-technical-plan/merged-coverage-and-residual:
+  en: 060bff2de950170f
+  zh: 6d13f39bb0d631c3
+/deepseek-harness-agent-trajectory-instrumentation-probe-first-point-fixes-technical-plan/merged-coverage-and-residual/candidates-and-supplement-points:
+  en: c22747efe799e59e
+  zh: badbb0616f7dcf81
+/deepseek-harness-agent-trajectory-instrumentation-probe-first-point-fixes-technical-plan/merged-coverage-and-residual/residual:
+  en: ac828ccf519714ef
+  zh: 39a96dbf6c0d89d4
+/deepseek-harness-agent-trajectory-instrumentation-probe-first-point-fixes-technical-plan/compatibility-and-rollback:
+  en: dc9b3cb83ca942c1
+  zh: 722be50b85323a12
+/deepseek-harness-agent-trajectory-instrumentation-probe-first-point-fixes-technical-plan/development-conventions:
+  en: a5ada1fb740560dc
+  zh: 7bf94e9c07a7ead8
+/deepseek-harness-agent-trajectory-instrumentation-probe-first-point-fixes-technical-plan/environment-setup:
+  en: d0dc862c6455bd78
+  zh: f0166238d61c1712
+/deepseek-harness-agent-trajectory-instrumentation-probe-first-point-fixes-technical-plan/test-method:
+  en: b6b646ce614e123d
+  zh: ba5271e6ae68a829
+/deepseek-harness-agent-trajectory-instrumentation-probe-first-point-fixes-technical-plan/implementation-batches:
+  en: 7ad10af050ca5308
+  zh: 90ab458b22a1d8f7
+/deepseek-harness-agent-trajectory-instrumentation-probe-first-point-fixes-technical-plan/central-open-questions:
+  en: 6a4361c04bdab206
+  zh: 828487ecb1da91eb

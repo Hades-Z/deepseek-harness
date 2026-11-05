@@ -1594,7 +1594,7 @@
     {
       "doc": "docs/subsystems/compaction.md",
       "symbol": "CompactionTrigger",
-      "source": "packages/compaction/compaction/src/index.ts"
+      "source": "packages/compaction/compaction/src/types.ts"
     },
     {
       "doc": "docs/subsystems/compaction.md",

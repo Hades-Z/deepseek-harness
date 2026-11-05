@@ -378,6 +378,12 @@ export function createRunCodeTool(
         callSignal.addEventListener('abort', onOuterAbort, { once: true })
 
         let dispatches = 0
+        // Run-wide overlap trackers for the `ptc/settled-overlap` summary appended once at run
+        // settlement: the largest in-flight count observed, and how many dispatches reached a
+        // settled outcome (started calls always settle; queued-unstarted calls abandoned at run
+        // settlement do not, so settled <= dispatched).
+        let peakInFlight = 0
+        let settledCount = 0
         // The per-run scheduler uses the registry's staged interface and follows
         // the same concurrency rules as the native loop. It also follows the
         // native loop's SEQUENCING: every ordered stage (the dispatch-start
@@ -470,6 +476,9 @@ export function createRunCodeTool(
                       wakeup()
                     })
                     inFlight.add(flight)
+                    // Peak overlap actually observed during this run (capped at maxParallel, but an
+                    // exclusive-only run peaks at 1). Read after the add so this call is counted.
+                    if (inFlight.size > peakInFlight) peakInFlight = inFlight.size
                     continue
                   }
                 }
@@ -524,6 +533,8 @@ export function createRunCodeTool(
             let parked:
               | { kind: 'post-result' | 'final-result'; exec: ToolRunContext; result: ToolExecutionResult }
               | undefined
+            // In-flight count captured at this call's start (its overlap degree); recorded on its settle event.
+            let overlapAtStart = 0
             const settle = (result: ToolExecutionResult): void => {
               // The program gets its value NOW: the log-content listener (for
               // example, a spill backend) must never delay the binding or occupy
@@ -531,6 +542,7 @@ export function createRunCodeTool(
               // settlement drains logWork so every settle event is still appended
               // inside the open turn (shapeDispatchLog is contained, so this
               // chain cannot reject).
+              settledCount += 1
               resolve(result.isError
                 ? { isError: true, message: result.error.message }
                 : { isError: false, value: result.value })
@@ -560,6 +572,12 @@ export function createRunCodeTool(
                   ...result.error?.info === undefined ? {} : { error: result.error.info },
                   content: logged,
                   ...result.meta === undefined ? {} : { meta: result.meta },
+                  // Overlap cap and submission position (same as the start event); overlap at this
+                  // call's admission, captured at start time and recorded here so the settle event
+                  // reconstructs the actual overlap without aligning start timestamps.
+                  maxParallel,
+                  submissionOrder: n,
+                  overlapAtStart,
                 })
               })().finally(() => { logWork.delete(task) })
               logWork.add(task)
@@ -574,12 +592,20 @@ export function createRunCodeTool(
                 reject(new Error(`run_code run is over (${String(runController.signal.reason)}); ${name} tool call abandoned`))
               },
               async start(): Promise<void> {
+                // The in-flight count BEFORE this call's flight joins the pool is its overlap degree:
+                // how many sibling dispatches were already running when this call was admitted. Captured
+                // here (inside the ordered start lane, before drive() adds this.flight) and read at
+                // settle, so the settle event carries the overlap without aligning start timestamps.
+                overlapAtStart = inFlight.size
                 exec.agent?.session.append('tool/ptc-dispatch-start', {
                   rootCallId: exec.rootCallId,
                   parentCallId: exec.callId,
                   subCallId,
                   name,
                   arguments: normalized.logged,
+                  // Effective overlap cap for this run; submission position matches the subCallId suffix.
+                  maxParallel,
+                  submissionOrder: n,
                 })
                 // Ordered prepare runs INSIDE the driver lane: the next entry's
                 // pre-execute waits for this resolution, as under the native
@@ -691,6 +717,25 @@ export function createRunCodeTool(
             // Binding failures remain observable through their individual promises.
             runController.abort('run_code settled')
             await drainDispatches()
+            // One run-wide overlap summary, after every settle event committed. Log-only and
+            // contained: a write failure only warns (it never changes the run's return or
+            // exception), and the summary is skipped when the outer call has no agent (the
+            // per-dispatch events are skipped for the same reason). The agent is still alive
+            // here — this finally runs before the outer execution returns.
+            const agent = exec.agent
+            if (agent !== undefined) {
+              try {
+                agent.session.append('ptc/settled-overlap', {
+                  rootCallId: exec.callId,
+                  maxParallel,
+                  dispatched: dispatches,
+                  settled: settledCount,
+                  peakOverlap: peakInFlight,
+                })
+              } catch (error: unknown) {
+                logger.warn(`tools: ptc/settled-overlap append failed for ${String(exec.callId)}: ${toolErrorMessage(error)}`)
+              }
+            }
           }
 
           if (result.error) {

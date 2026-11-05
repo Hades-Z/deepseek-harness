@@ -9,6 +9,9 @@
   ],
   "references": [
     {
+      "path": "../../core/agent-loop"
+    },
+    {
       "path": "../../../vendor/cosmokit"
     },
     {
@@ -37,6 +40,9 @@
     },
     {
       "path": "../../session/working-directory"
+    },
+    {
+      "path": "../../deliverables/workspace-changes"
     }
   ]
 }

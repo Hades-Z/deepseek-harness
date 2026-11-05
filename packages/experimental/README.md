@@ -101,6 +101,7 @@ Promotion requires a named product role, documented public behavior and limitati
 | [`forge-session`](forge-session/README.md) | Binds change requests to the Sessions that created, pushed, or tracked them | `ctx.forgeSession` |
 | [`client-ui-forge`](client-ui-forge/README.md) | GUI panel for a Session's Git checkout, worktrees, and bound pull requests | `ctx.forgePanel` |
 | [`forge-bundle`](forge-bundle/README.md) | Default-disabled pull request and worktree panel composition | — |
+| [`trajectory-probe`](trajectory-probe/README.md) | Read-only external probe that records agent-trajectory facts as ignorable plugin records | — |
 
 -----
 

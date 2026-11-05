@@ -140,6 +140,10 @@ describe('hooks-codex bridge', () => {
     expect(result?.type === 'tool/result' && result.data.message.isError).toBe(true)
     expect(result?.type === 'tool/result' && result.data.message.content.some(b => b.type === 'text' && b.text.includes('codex blocked it'))).toBe(true)
     expect(events(agent).some(e => e.type === 'hook/invoked' && e.data.dialect === 'codex' && e.data.point === 'PreToolUse')).toBe(true)
+    const vote = events(agent).find(e => e.type === 'tool/pre-execute-decision')
+    expect(vote?.type === 'tool/pre-execute-decision' && vote.data).toMatchObject({
+      listenerId: 'hooks-codex', callId: 'c1', toolName: 'Bash', decision: 'deny', reason: 'codex blocked it',
+    })
   })
 
   it('a Stop hook (exit 2) forces the turn to continue with the reason as steering', async () => {
@@ -159,6 +163,44 @@ describe('hooks-codex bridge', () => {
     expect(adapter.requests).toHaveLength(2)
     expect(JSON.stringify(adapter.requests[1]!.messages)).toContain('keep going: address the goal')
   }, 15_000) // Two real hook subprocesses and agent steps need startup and teardown headroom under load.
+
+  it('votes stop after its own Stop point, before the loop summary', async () => {
+    const dir = configDir()
+    writeHooks(dir, {})
+    const adapter = new MockAdapter([textResponse('done')])
+    const ctx = await harness(dir, adapter)
+    const agent = await ctx.agentLoop.create(SessionId('stop-vote'), { provider: 'mock', model: 'mock' })
+    agent.followup(createUserMessage({ content: [{ type: 'text', text: 'go' }], source: { kind: 'user' } }))
+    await waitForIdle(ctx, agent)
+
+    const votes = events(agent).filter(event => event.type === 'turn/stopping').map(event => event.data)
+    expect(votes).toEqual([
+      { turn: 1, source: 'hooks-codex', outcome: 'stop' },
+      { turn: 1, step: 1, source: 'agent-loop', outcome: 'stop' },
+    ])
+  })
+
+  it('reports its steering message id when a blocking Stop hook continues the turn', async () => {
+    const dir = configDir()
+    const marker = join(dir, 'fired')
+    const cont = script(dir, 'cont.sh', `#!/usr/bin/env bash\nif [ -e "${marker}" ]; then exit 0; fi\ntouch "${marker}"\necho "keep going: address the goal" >&2\nexit 2\n`)
+    writeHooks(dir, { Stop: [{ hooks: [{ type: 'command', command: cont }] }] })
+
+    const adapter = new MockAdapter([textResponse('first answer'), textResponse('second answer')])
+    const ctx = await harness(dir, adapter)
+    const agent = await ctx.agentLoop.create(SessionId('stop-vote-continue'), { provider: 'mock', model: 'mock' })
+    agent.followup(createUserMessage({ content: [{ type: 'text', text: 'go' }], source: { kind: 'user' } }))
+    await waitForIdle(ctx, agent)
+
+    const votes = events(agent).filter(event => event.type === 'turn/stopping').map(event => event.data)
+    expect(votes).toHaveLength(4)
+    expect(votes[0]).toMatchObject({ turn: 1, source: 'hooks-codex', outcome: 'continue' })
+    const steered = events(agent).find(event => event.type === 'user/message' && event.data.source.kind === 'hooks-codex')
+    expect(votes[0]?.steeringMessageIds).toEqual([steered?.type === 'user/message' ? steered.data.id : undefined])
+    expect(votes[1]).toMatchObject({ turn: 1, step: 1, source: 'agent-loop', outcome: 'continue' })
+    expect(votes[2]).toEqual({ turn: 1, source: 'hooks-codex', outcome: 'stop' })
+    expect(votes[3]).toMatchObject({ turn: 1, step: 2, source: 'agent-loop', outcome: 'stop' })
+  }, 15_000)
 
   it('turn cancellation aborts and reaps a running UserPromptSubmit hook before idle', async () => {
     const dir = configDir()

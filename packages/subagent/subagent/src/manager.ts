@@ -43,6 +43,36 @@ import type { SubagentDelivery } from './control-types.ts'
 import { ActivationPool, ChildLock, activationAgent, captureLocalResult, observeLocalFailure, requireLocalActivation } from './activation.ts'
 import type { Activation, ActivationResource, LocalActivation } from './activation.ts'
 
+declare module '@deepseek-ai/dsh-session/types' {
+  interface SessionEventMap {
+    /**
+     * Records one input delivery a resident child admitted through the
+     * continuation manager, distinguishing the inbox destination (`steer` or
+     * `queue`) that the delivered `user/message` alone does not carry.
+     * Appended after the manager accepted the delivery. Log-only: it carries
+     * no `surfaceOp` and never enters model history. Only child-directed
+     * deliveries through the manager are recorded; a child's message to its
+     * parent and external executions (which have no child session) are not.
+     */
+    'subagent/steer': {
+      /** Inbox destination the accepted delivery took. */
+      delivery: SubagentDelivery
+      /** Durable id of the accepted message. */
+      messageId: MessageId
+      /**
+       * The accepted message's text blocks joined in order; non-text blocks
+       * live only in the delivered `user/message` event.
+       */
+      text: string
+    }
+  }
+}
+
+/** Concatenate the message's text blocks in delivery order. */
+function messageText(content: readonly ContentBlock[]): string {
+  return content.flatMap(block => block.type === 'text' ? [block.text] : []).join('\n')
+}
+
 /** Inputs shared by model steering and human prompt delivery. */
 type ChildDeliveryOptions =
   | {
@@ -1453,7 +1483,33 @@ export class SubagentManager {
     } finally {
       this.wake(activation)
     }
+    this.recordAcceptedDelivery(activation, options.delivery, message)
     return message.id
+  }
+
+  /**
+   * Record one accepted child delivery after admission: the activation observer
+   * accumulates it for this epoch's `subagent/run-end` fact, and the child
+   * session gains the durable `subagent/steer` fact. Recording failure only
+   * warns: the delivery is already accepted and the Agent has durably recorded
+   * its user message.
+   * @param activation - the resident activation the delivery was admitted into.
+   * @param delivery - inbox destination the delivery took.
+   * @param message - the accepted message.
+   */
+  private recordAcceptedDelivery(activation: Activation, delivery: SubagentDelivery, message: UserMessage): void {
+    activation.observer.recordSteer(delivery, message.id)
+    try {
+      requireLocalActivation(activation).handle.agent.session.append('subagent/steer', {
+        delivery,
+        messageId: message.id,
+        text: messageText(message.content),
+      })
+    } catch (error: unknown) {
+      this.ctx.logger.warn(
+        `subagent "${activation.childId}": the accepted delivery was not recorded as subagent/steer: ${errorChain(error)}`,
+      )
+    }
   }
 
   /** Refuse image content for a child whose fixed model accepts text only. */

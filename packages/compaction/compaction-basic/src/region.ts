@@ -14,7 +14,12 @@ import {
   toolPairingBalancedAfter,
   toolPairingBalancedBefore,
 } from '@deepseek-ai/dsh-compaction'
-import type { CompactionResult } from '@deepseek-ai/dsh-compaction'
+import type {
+  CompactionAutoCaller,
+  CompactionResult,
+  CompactionRetryDecision,
+  CompactionStartTrigger,
+} from '@deepseek-ai/dsh-compaction'
 import type { CommandId } from '@deepseek-ai/dsh-commands/brand'
 import { createUserMessage, errorChain } from '@deepseek-ai/dsh-llm'
 import type { Message, UserMessage } from '@deepseek-ai/dsh-llm'
@@ -61,6 +66,26 @@ interface CompactionTransactionOptions {
   readonly flush?: () => Promise<void>
   /** Manual command that initiated this transaction, when present. */
   readonly sourceCommandId?: CommandId
+  /** Why this transaction runs; recorded on `compaction/start`. */
+  readonly trigger: CompactionStartTrigger
+  /** Automatic hook that requested it; `null` for direct and manual callers. */
+  readonly autoCaller: CompactionAutoCaller | null
+  /**
+   * Surface replacement generation when the enclosing recovery attempt began.
+   * Overflow recovery measures against it to authorize a retry, so the closing
+   * observation uses the same baseline.
+   */
+  readonly recoveryBaseline?: number
+}
+
+/** Facts a caller attaches to one transaction it requests. */
+export interface CompactionRegionObservation {
+  /** Why the transaction runs. */
+  readonly trigger: CompactionStartTrigger
+  /** Automatic hook that requested it; `null` for direct and manual callers. */
+  readonly autoCaller: CompactionAutoCaller | null
+  /** Surface replacement generation when the enclosing recovery attempt began. */
+  readonly recoveryBaseline?: number
 }
 
 interface CompactionEntryState {
@@ -155,6 +180,39 @@ export function selectCompactableRange(
 }
 
 /**
+ * Record the retry-relevant facts visible when an attempt closes. The overflow
+ * listener authorizes a retry from the same replacement-generation and
+ * cancellation checks, so this observation mirrors that decision without
+ * participating in it.
+ * @param session - session whose replacement generation is observed.
+ * @param baseline - replacement generation the attempt measures against.
+ * @param trigger - why the attempt runs; only overflow recovery has a retry decision.
+ * @param signal - compaction cancellation signal.
+ * @returns the closing observation fields for `compaction/end`.
+ */
+function closingObservation(
+  session: Session,
+  baseline: number,
+  trigger: CompactionStartTrigger,
+  signal: AbortSignal | undefined,
+): {
+  generationAdvanced: boolean
+  retryDecision: CompactionRetryDecision
+  recovered: boolean
+} {
+  const generationAdvanced = session.surface.replaceGeneration > baseline
+  if (trigger !== 'context-overflow') {
+    return { generationAdvanced, retryDecision: 'not-applicable', recovered: false }
+  }
+  const retryAuthorized = generationAdvanced && signal?.aborted !== true
+  return {
+    generationAdvanced,
+    retryDecision: retryAuthorized ? 'retry' : 'preserve-error',
+    recovered: retryAuthorized,
+  }
+}
+
+/**
  * Run the single compaction transaction over one selected positional span.
  * Selection and validation are read-only. Idle/log validation and
  * `compaction/start` are synchronously adjacent, so the durable opening marker is
@@ -202,12 +260,17 @@ export async function compactSurfaceRegion(
   }
 
   const compactionId = CompactionId(randomUUID())
+  const observationBaseline = options.recoveryBaseline ?? session.surface.replaceGeneration
   const lifecycle = {
     compactionId,
     ...options.sourceCommandId === undefined ? {} : { sourceCommandId: options.sourceCommandId },
     turn: owner,
   }
-  const startEvent = session.append('compaction/start', lifecycle)
+  const startEvent = session.append('compaction/start', {
+    ...lifecycle,
+    trigger: options.trigger,
+    autoCaller: options.autoCaller,
+  })
   const assertStable: StabilityCheck = options.stability === 'whole-surface'
     ? assertWholeSurfaceUnchanged
     : assertSelectedSpanStable
@@ -234,7 +297,10 @@ export async function compactSurfaceRegion(
     stage = 'commit'
     const pending = commitCompactionBody(session, startEvent, summarized)
     closing = true
-    const endEvent = session.append('compaction/end', lifecycle)
+    const endEvent = session.append('compaction/end', {
+      ...lifecycle,
+      ...closingObservation(session, observationBaseline, options.trigger, signal),
+    })
     closed = true
     result = completeCompaction(pending, endEvent)
   } catch (error: unknown) {
@@ -242,7 +308,11 @@ export async function compactSurfaceRegion(
     if (!closing) {
       closing = true
       try {
-        session.append('compaction/end', { ...lifecycle, error: errorChain(error) })
+        session.append('compaction/end', {
+          ...lifecycle,
+          ...closingObservation(session, observationBaseline, options.trigger, signal),
+          error: errorChain(error),
+        })
         closed = true
       } catch (closeError: unknown) {
         failure = { error: closeError, stage: 'commit' }

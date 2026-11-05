@@ -321,6 +321,10 @@ async snapshot(options: SkillViewOptions = {}): Promise<SkillCatalogSnapshot>
  * @param options - view options; `scope` selects the viewing agent's layers,
  *   `cwd` selects workspace-sensitive skills, and `signal` cancels work.
  * @returns the full skill, including body content, or `undefined`.
+ * A validated load appends a log-only `skill/loaded` session record (name,
+ * source, provider, real load time, collect-cache state) to the current
+ * initiator agent's session; the append is contained and never changes this
+ * return value.
  */
 async get(name: string, options: SkillViewOptions = {}): Promise<SkillDefinition | undefined>
 ```

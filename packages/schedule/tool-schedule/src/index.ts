@@ -453,6 +453,8 @@ function registerScheduleTools(ctx: Context): void {
   ctx.tools.register(defineTool({
     name: 'schedule_create',
     description: CREATE_DESCRIPTION,
+    // Trajectory provenance: names this package as the settled call's owner.
+    pluginOwner: '@deepseek-ai/dsh-tool-schedule',
     parameters: {
       prompt: {
         type: 'string',
@@ -491,6 +493,8 @@ function registerScheduleTools(ctx: Context): void {
   ctx.tools.register(defineTool({
     name: 'schedule_list',
     description: LIST_DESCRIPTION,
+    // Trajectory provenance: names this package as the settled call's owner.
+    pluginOwner: '@deepseek-ai/dsh-tool-schedule',
     parameters: {},
     output: { schema: LIST_OUTPUT_SCHEMA, render: renderValue },
     async execute(_args, exec): Promise<ScheduleListValue> {
@@ -512,6 +516,8 @@ function registerScheduleTools(ctx: Context): void {
   ctx.tools.register(defineTool({
     name: 'schedule_delete',
     description: DELETE_DESCRIPTION,
+    // Trajectory provenance: names this package as the settled call's owner.
+    pluginOwner: '@deepseek-ai/dsh-tool-schedule',
     parameters: {
       id: { type: 'string', required: true, description: 'Exact schedule id.' },
     },
@@ -538,6 +544,8 @@ function registerScheduleTools(ctx: Context): void {
   ctx.tools.register(defineTool({
     name: 'schedule_update',
     description: UPDATE_DESCRIPTION,
+    // Trajectory provenance: names this package as the settled call's owner.
+    pluginOwner: '@deepseek-ai/dsh-tool-schedule',
     parameters: {
       id: { type: 'string', required: true, description: 'Schedule id returned by schedule_list.' },
       title: {

@@ -141,6 +141,14 @@ interface AskUserQuestionRequestEvent {
     /** True for a foreground wait that requires a Client claim; absent for indefinite waits. */
     timed?: boolean
   }
+  /**
+   * The one writable field of an otherwise caller-owned request: before
+   * returning its answer, the listener that actually answered sets this to its
+   * stable id, and `ask()` copies it onto the `user-question/answered` audit
+   * event. Leave it absent to stay an unknown answerer; the service never
+   * infers identity.
+   */
+  answeredBy?: string
 }
 ```
 
@@ -282,6 +290,11 @@ async askTimed( request: AskUserQuestionRequest & { agent: Agent }, callId: Tool
  * decides this boundary: an owned child has no human answerer and would
  * block forever, while a lineage-bearing session resumed as a new runtime
  * root may ask normally.
+ *
+ * After the answer settles, the service appends a log-only
+ * `user-question/answered` audit record to the agent's Session (warn-only on
+ * failure, never without an agent); a rejected, aborted, or timed-out ask
+ * records nothing.
  *
  * @param request Questions, owner agent, and abort signal.
  * @returns The answer chosen or typed by the human.

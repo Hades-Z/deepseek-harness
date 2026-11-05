@@ -142,6 +142,35 @@ declare module '@deepseek-ai/dsh-session-projection/types' {
   }
 }
 
+declare module '@deepseek-ai/dsh-session/types' {
+  interface SessionEventMap {
+    /**
+     * A user-question request settled with an answer inside
+     * `UserQuestionService.ask()` — log-only audit (like `hook/*`; NOT a
+     * surface event, carries no `surfaceOp`), never in the model transcript.
+     * Written only after the answerer waterfall resolved, and only when the
+     * request carried an agent (the Session to record against); a rejected,
+     * aborted, or timed-out ask writes nothing. `callId` is the timed wait the
+     * Client card was keyed by, absent for a blocking request. `answeredBy` is
+     * the answering listener's self-reported stable id, absent when it did not
+     * self-report — the service never infers identity; the SDK bridge reports
+     * `sdk-host` only where it is the actual answerer. A late reply to a
+     * continued question keeps its existing durable record, the steered
+     * `user-question-reply` user message, so this event does not cover it.
+     */
+    'user-question/answered': {
+      /** Tool call the timed card was keyed by; absent for a blocking request. */
+      callId?: ToolCallId
+      /** The settled answer batch, one item per asked question. */
+      answers: readonly AskUserQuestionAnswerItem[]
+      /** Stable id the answering listener self-reported; absent when unknown. */
+      answeredBy?: string
+      /** Settle time as epoch milliseconds. */
+      answeredAt: number
+    }
+  }
+}
+
 /** Client-safe payload declared for the user-question answerer waterfall. */
 export interface AskUserQuestionRequestEvent {
   /** Questions to display. */
@@ -160,6 +189,14 @@ export interface AskUserQuestionRequestEvent {
     /** True for a foreground wait that requires a Client claim; absent for indefinite waits. */
     timed?: boolean
   }
+  /**
+   * The one writable field of an otherwise caller-owned request: before
+   * returning its answer, the listener that actually answered sets this to its
+   * stable id, and `ask()` copies it onto the `user-question/answered` audit
+   * event. Leave it absent to stay an unknown answerer; the service never
+   * infers identity.
+   */
+  answeredBy?: string
 }
 
 declare module '@deepseek-ai/cordis' {

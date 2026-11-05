@@ -114,6 +114,8 @@ This section explains how the service realizes the behavior above; the observabl
 
 `goal/changed` fires after the durable event commits, with listener failures contained; the payload carries the operation, the exact ref, and the fresh view (absent for a clear tombstone). `goal/activation-changed` forwards a process-local `armed`/`disarmed` edge with the exact current ref, or no goal after a clear, without changing durable state. Admitted continuation rounds are attributed through `GoalMessageSource { goalId, revision, round }` on the `user/message` event, which the strict fold validates as the next admitted round of the current goal.
 
+A `block` change additionally records `blockedRounds { admitted, threshold }` — the continuation rounds already admitted and the `maxGoalRounds` budget in force at the block decision. The decoder tolerates block changes from older logs that lack the record, rejects it on any other operation, and validates it against `roundsStarted` and `goal.maxGoalRounds`, so replay of logs written before the field stays working.
+
 </details>
 
 -----

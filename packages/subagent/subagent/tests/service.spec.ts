@@ -369,11 +369,16 @@ describe('SubagentRuntime', () => {
 
     await expect(start(subagents, 'catalog-failure', baseRequest({ parent }), 'parent'))
       .rejects.toBe(catalogFailure)
-    expect(append).toHaveBeenCalledOnce()
+    // The rejected catalog append is the admission failure; the still-started
+    // epoch then settles, so its durable run-end is attempted as a second
+    // append and fails against the same unavailable Session. Both failures stay
+    // contained as warnings.
+    expect(append).toHaveBeenCalledTimes(2)
     expect(dispose).toHaveBeenCalledOnce()
-    expect(warnings).toHaveBeenCalledOnce()
-    expect(warnings.mock.calls[0]![0]).toContain('run infrastructure failed')
-    if (failsDisposal) expect(warnings.mock.calls[0]![0]).toContain('dispose also failed')
+    expect(warnings).toHaveBeenCalledTimes(2)
+    expect(warnings.mock.calls[0]![0]).toContain('not recorded as subagent/run-end')
+    expect(warnings.mock.calls[1]![0]).toContain('run infrastructure failed')
+    if (failsDisposal) expect(warnings.mock.calls[1]![0]).toContain('dispose also failed')
   })
 
   it('emits an enriched end event and maps result rejection to error telemetry', async () => {

@@ -1,0 +1,28 @@
+# Bilingual-pair consistency record for 2026-10-29-log-only-trajectory-events.md (docs/i18n/README.md): per heading
+# section, a hash of its English and Chinese blocks outside code blocks and generated regions.
+# After editing either side, bring the other along and re-record with:
+#   pnpm run verify-translation-pairing --write docs/persistence-changes/2026-10-29-log-only-trajectory-events.md
+/:
+  en: 3d5a424ae7d7e46b
+  zh: c22a8e4a62d8cc1a
+/2026-10-29-log-only-trajectory-events:
+  en: 159d1cbaeecdce22
+  zh: 74a2ccf7ed9b40b9
+/2026-10-29-log-only-trajectory-events/summary:
+  en: cdc7c524863eb810
+  zh: a35ed8133995bbab
+/2026-10-29-log-only-trajectory-events/table-of-contents:
+  en: 6cf314a069ceb451
+  zh: 9adff678e9ecab3b
+/2026-10-29-log-only-trajectory-events/declaration:
+  en: 6907136f28e48c90
+  zh: 02f8298485f3d8e7
+/2026-10-29-log-only-trajectory-events/compatibility:
+  en: 41a637fa18e05b5b
+  zh: 73095a32c55b7187
+/2026-10-29-log-only-trajectory-events/verification:
+  en: c00318b13ca3bc67
+  zh: 26666bc72e207189
+/2026-10-29-log-only-trajectory-events/dev-note:
+  en: b75c8458928b72b9
+  zh: 003ba4e17b4b5269

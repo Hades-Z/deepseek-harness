@@ -11,7 +11,7 @@ import type { Agent } from '@deepseek-ai/dsh-agent'
 import { createUserMessage } from '@deepseek-ai/dsh-llm'
 import type { UserMessage } from '@deepseek-ai/dsh-llm'
 import type { SessionEvent } from '@deepseek-ai/dsh-session'
-import { SessionId } from '@deepseek-ai/dsh-session'
+import SessionStore, { SessionId } from '@deepseek-ai/dsh-session'
 import { bindScopeParent, createScope, scopeOf } from '@deepseek-ai/dsh-scope'
 import { JobId } from '@deepseek-ai/dsh-jobs'
 import LocalJobRegistry from '@deepseek-ai/dsh-jobs-local'
@@ -489,6 +489,22 @@ describe('job_output', () => {
     expect(text(result)).toContain('belongs to another session')
     expect((await call(ctx, 'job_output', { job_id: startedId(ctx, 'bash-1') })).isError).toBe(true)
     expect((await call(ctx, 'job_output', { job_id: startedId(ctx, 'bash-1') }, alice)).isError).toBe(false)
+  })
+
+  it('records its own handled pre-execute vote when it bounds a job result', async () => {
+    const { ctx } = await setup()
+    await ctx.plugin(SessionStore)
+    const session = ctx.sessions.create(SessionId('sess-vote'))
+    const agent = await fakeAgent(ctx, 'sess-vote-owner')
+    Object.assign(agent, { session })
+    ctx.jobs.start(producer({ owner: agent.id, outputLimitBytes: 64 }).spec)
+
+    const result = await call(ctx, 'job_output', { job_id: startedId(ctx, 'bash-1') }, agent)
+    expect(result.isError).toBe(false)
+    const vote = session.snapshotEvents().find(event => event.type === 'tool/pre-execute-decision')
+    expect(vote?.type === 'tool/pre-execute-decision' && vote.data).toMatchObject({
+      listenerId: 'tool-jobs', toolName: 'job_output', decision: 'handled', callId: expect.anything(),
+    })
   })
 
   it('bounds pre-, around-, and post-execute policy outcomes and failures', async () => {

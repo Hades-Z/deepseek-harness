@@ -35,6 +35,14 @@ await isolatedInboxCtx.plugin(SessionProjectionRegistry)
 await isolatedInboxCtx.plugin(AgentRegistry)
 const sessionStubs = new WeakMap<Session, StubAgent>()
 
+/** Narrow a decoded goal change to the snapshot variant that carries goal fields. */
+function requireSnapshotChange(change: GoalChangeMeta | undefined): GoalSnapshotChangeMeta {
+  if (change === undefined || change.operation === 'clear') {
+    throw new Error('expected a decodable goal snapshot change')
+  }
+  return change
+}
+
 /** Number the next balanced test-fixture turn. */
 function nextTurn(session: Session): number {
   return session.snapshotEvents().reduce((max, event) => event.type === 'turn/start' ? Math.max(max, event.data.turn) : max, 0) + 1
@@ -431,6 +439,29 @@ describe('GoalService mutations', () => {
     expect(ctx.goals.complete(agent, goal).phase).toBe('complete')
   })
 
+  it('records blockedRounds on the block change and on no other operation', async () => {
+    const { ctx, agent, session } = await harness()
+    let goal = ctx.goals.create(agent, { objective: 'recorded', maxGoalRounds: 2 })
+    appendRound(session, goal, 1)
+    goal = ctx.goals.block(agent, goal, { code: 'needs-input', message: 'A choice is required.' })
+
+    const changes = session.snapshotEvents()
+      .flatMap(event => event.type === 'goal/change' ? [decodeGoalChange(event.data)] : [])
+    expect(changes[0]).toMatchObject({ operation: 'create' })
+    expect(requireSnapshotChange(changes[0]).blockedRounds).toBeUndefined()
+    const block = changes.at(-1)
+    expect(block).toMatchObject({ operation: 'block', blockedRounds: { admitted: 1, threshold: 2 } })
+    expect(requireSnapshotChange(block).roundsStarted).toBe(1)
+    expect(requireSnapshotChange(block).goal.maxGoalRounds).toBe(2)
+
+    goal = ctx.goals.resume(agent, goal)
+    const resume = session.snapshotEvents()
+      .flatMap(event => event.type === 'goal/change' ? [decodeGoalChange(event.data)] : [])
+      .at(-1)
+    expect(resume?.operation).toBe('resume')
+    expect(requireSnapshotChange(resume).blockedRounds).toBeUndefined()
+  })
+
   it('clears through a revisioned tombstone and permits a fresh goal', async () => {
     const { ctx, agent, session } = await harness()
     const goal = ctx.goals.create(agent, { objective: 'temporary' })
@@ -662,6 +693,32 @@ describe('goal replay validation', () => {
     expect(() => decodeGoalChange({
       kind: 'goal/change', version: 1, operation: 'clear', cleared: { id: 'x', revision: 2 }, clearedAt: 1, extra: true,
     })).toThrow('clear change must have exactly')
+  })
+
+  it('tolerates an old block change without blockedRounds and validates the recorded one', () => {
+    const base = snapshotChange()
+    const oldBlock = mutation(base, 'block', 'blocked')
+    expect(decodeGoalChange(oldBlock)).toMatchObject({ operation: 'block' })
+    expect(requireSnapshotChange(decodeGoalChange(oldBlock)).blockedRounds).toBeUndefined()
+    expect(foldPair(base, oldBlock)).toMatchObject({ goal: { phase: 'blocked' } })
+
+    const recorded: GoalSnapshotChangeMeta = {
+      ...mutation(base, 'block', 'blocked'),
+      blockedRounds: { admitted: 0, threshold: base.goal.maxGoalRounds },
+    }
+    expect(decodeGoalChange(recorded)).toMatchObject({ blockedRounds: { admitted: 0, threshold: 2 } })
+    expect(foldPair(base, recorded)).toMatchObject({ goal: { phase: 'blocked' } })
+  })
+
+  it('rejects a malformed blockedRounds record', () => {
+    const base = snapshotChange()
+    const block = mutation(base, 'block', 'blocked')
+    expect(() => decodeGoalChange({ ...block, blockedRounds: { admitted: 0 } })).toThrow('exactly admitted and threshold')
+    expect(() => decodeGoalChange({ ...block, blockedRounds: { admitted: -1, threshold: 2 } })).toThrow('blockedRounds.admitted must be a non-negative safe integer')
+    expect(() => decodeGoalChange({ ...block, blockedRounds: { admitted: 0, threshold: 0 } })).toThrow('blockedRounds.threshold must be a positive safe integer')
+    expect(() => decodeGoalChange({ ...block, blockedRounds: { admitted: 3, threshold: 2 } })).toThrow('blockedRounds.admitted cannot exceed the threshold')
+    expect(() => decodeGoalChange({ ...block, blockedRounds: { admitted: 1, threshold: 2 } })).toThrow('blockedRounds must match roundsStarted and goal.maxGoalRounds')
+    expect(() => decodeGoalChange({ ...mutation(base, 'pause', 'paused'), blockedRounds: { admitted: 0, threshold: 2 } })).toThrow('only a goal block change may carry blockedRounds')
   })
 
   it('rejects invalid create and missing-current mutation sequences', () => {

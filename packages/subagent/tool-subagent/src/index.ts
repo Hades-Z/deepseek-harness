@@ -31,6 +31,7 @@ import type { DelegationModelRequest } from './model-selection.ts'
 import { registerListSubagentModels } from './list-models.ts'
 import { SubagentPresetSelection, type PresetSelectionConfig, type PresetSelectionRequest } from './preset-selection.ts'
 import {
+  recordModelSelectionObservation,
   subagentModelSelectionProjectionDefinition,
   subagentModelSelectionPolicy,
 } from './model-selection-state.ts'
@@ -216,6 +217,8 @@ export async function apply(ctx: Context, config: Config): Promise<void> {
         + (modelSelectionEnabled && subagentProvider.inheritsParentContext
           ? ' Changing the route can prevent provider-side reuse of the inherited conversation prefix.'
           : ''),
+      // Trajectory provenance: names this package as the settled call's owner.
+      pluginOwner: '@deepseek-ai/dsh-tool-subagent',
       parameters: {
         cwd: {
           type: 'string',
@@ -327,6 +330,24 @@ export async function apply(ctx: Context, config: Config): Promise<void> {
           request,
           signal: exec.signal,
           delivery: 'parent',
+        })
+        recordModelSelectionObservation(ctx.logger, parent.session, {
+          subagentId: started.childId,
+          // Only the model-facing route fields the call supplied; other call
+          // arguments live in the executed tool event.
+          ...(hasDelegationModelRequest(modelRequest)
+            ? {
+                requested: {
+                  ...args.provider === undefined ? {} : { provider: args.provider },
+                  ...args.model === undefined ? {} : { model: args.model },
+                  ...args.reasoning_effort === undefined ? {} : { reasoning_effort: args.reasoning_effort },
+                },
+              }
+            : {}),
+          // Omission records that no child options were forwarded and the
+          // provider's own defaults resolve the route, which is unobservable here.
+          ...requestedChildAgentOptions !== undefined ? { forwarded: requestedChildAgentOptions } : {},
+          policyConstrained: modelSelectionPolicy !== undefined,
         })
         return { kind: 'activation' as const, subagentId: started.childId }
       },

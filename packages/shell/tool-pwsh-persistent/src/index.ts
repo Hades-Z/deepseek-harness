@@ -427,6 +427,8 @@ function registerPersistentPwsh(ctx: Context, config: ResolvedConfig): void {
   ctx.tools.register(defineTool({
     name: 'pwsh',
     description: config.description,
+    // Trajectory provenance: names this package as the settled call's owner.
+    pluginOwner: '@deepseek-ai/dsh-tool-pwsh-persistent',
     parameters: {
       command: {
         type: 'string',

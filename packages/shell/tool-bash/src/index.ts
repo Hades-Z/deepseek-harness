@@ -368,6 +368,8 @@ export function apply(ctx: Context, config: Config = {}): void {
     return defineTool({
       name: 'bash',
       description: bashDescription(),
+      // Trajectory provenance: names this package as the settled call's owner.
+      pluginOwner: '@deepseek-ai/dsh-tool-bash',
       parameters: {
         description: {
           type: 'string',

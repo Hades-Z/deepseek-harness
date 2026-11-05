@@ -593,6 +593,11 @@ export class GoalService extends TypertRemoteService {
       roundsStarted,
       createdAt,
       updatedAt,
+      // Recorded only at the block decision: the rounds already admitted and
+      // the budget in force then — deterministic duplication of data the
+      // snapshot change already carries, so a trajectory consumer reads it
+      // without replaying the fold.
+      ...operation === 'block' ? { blockedRounds: { admitted: roundsStarted, threshold: goal.maxGoalRounds } } : {},
     }
     this.commit(agent, runtime, change, activation)
     return {

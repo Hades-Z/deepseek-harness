@@ -6,17 +6,24 @@
  * providers such as `@deepseek-ai/dsh-skill-filesystem` decide where skills come
  * from; this service only merges provider catalogs, resolves the winning skill
  * for a name, and exposes the winning summaries and definitions to consumers.
+ * A validated `get()` load also appends a log-only `skill/loaded` session
+ * record (declared in `./types.ts`); the append is contained and never changes
+ * the registry's return values or exceptions.
  *
  * @module @deepseek-ai/dsh-skill
  */
 
 import { Context, Service } from '@deepseek-ai/cordis'
+import type {} from '@deepseek-ai/dsh-agent'
 import type {} from '@deepseek-ai/dsh-llm'
+import type { SkillLoadedEventData } from './types.ts'
 import { assertNever } from '@deepseek-ai/dsh-util-values'
 import { NamedEntries, ScopedLayers, scopeChainOf, scopeOf } from '@deepseek-ai/dsh-scope'
 import type { ScopeKey, ScopeLayer } from '@deepseek-ai/dsh-scope'
 import z from '@deepseek-ai/schemastery'
 import type Schema from '@deepseek-ai/schemastery'
+
+export type { SkillLoadedEventData } from './types.ts'
 
 const SKILL_NAME = /^[a-z0-9]+(?:-[a-z0-9]+)*$/
 const DEFAULT_COLLECT_CACHE_ENTRIES = 128
@@ -321,6 +328,8 @@ interface LayerCollectResult {
 interface CollectResult {
   entries: Map<string, IndexedCandidate>
   cacheable: boolean
+  /** Whether the returned candidate map was served from the collect cache rather than fresh discovery. */
+  fromCache: boolean
 }
 
 /** One scope's complete skill-registry contribution. */
@@ -496,6 +505,10 @@ export class SkillRegistry extends Service {
    * @param options - view options; `scope` selects the viewing agent's layers,
    *   `cwd` selects workspace-sensitive skills, and `signal` cancels work.
    * @returns the full skill, including body content, or `undefined`.
+   * A validated load appends a log-only `skill/loaded` session record (name,
+   * source, provider, real load time, collect-cache state) to the current
+   * initiator agent's session; the append is contained and never changes this
+   * return value.
    */
   async get(name: string, options: SkillViewOptions = {}): Promise<SkillDefinition | undefined> {
     if (!isSkillName(name)) return undefined
@@ -513,6 +526,14 @@ export class SkillRegistry extends Service {
       this.invalidateEntry(match)
       return undefined
     }
+    appendSkillLoadedEvent(this.ctx, sessionId => ({
+      sessionId,
+      name: definition.name,
+      source: definition.source,
+      provider: definition.provider,
+      loadedAt: Date.now(),
+      cached: collected.fromCache,
+    }))
     return definition
   }
 
@@ -526,7 +547,7 @@ export class SkillRegistry extends Service {
       // and only a chain-bearing key makes the next read see the new preset.
       const key = this.collectCacheKey(options.cwd, scopeChainOf(options.scope), revision)
       const cached = this.collectCache.get(key)
-      if (cached !== undefined) return { entries: cached, cacheable: true }
+      if (cached !== undefined) return { entries: cached, cacheable: true, fromCache: true }
 
       const result = await this.collectFresh(options)
       throwIfAborted(options.signal)
@@ -535,7 +556,7 @@ export class SkillRegistry extends Service {
           attempt += 1
           continue
         }
-        return { entries: result.entries, cacheable: false }
+        return { entries: result.entries, cacheable: false, fromCache: false }
       }
       if (result.cacheable) {
         this.collectCache.set(key, result.entries)
@@ -544,7 +565,7 @@ export class SkillRegistry extends Service {
           this.collectCache.delete(oldest.value)
         }
       }
-      return result
+      return { entries: result.entries, cacheable: result.cacheable, fromCache: false }
     }
   }
 
@@ -561,7 +582,7 @@ export class SkillRegistry extends Service {
       if (!collected.cacheable) cacheable = false
       for (const entry of collected.entries) merged.set(entry.candidate.name, entry)
     }
-    return { entries: merged, cacheable }
+    return { entries: merged, cacheable, fromCache: false }
   }
 
   private async collectLayer(layer: SkillLayer, options: SkillLookupOptions): Promise<LayerCollectResult> {
@@ -862,6 +883,24 @@ function errorMessage(error: unknown): string {
     return String(error)
   } catch {
     return '[unrenderable thrown value]'
+  }
+}
+
+/**
+ * Append one `skill/loaded` record after the business commit it records. The append is contained:
+ * failure is warned and never changes the returned definition or the propagated exception. Nothing
+ * is written when no initiator agent owns a Session (agentless calls record nothing, and no
+ * identity is inferred from any other source).
+ * @param ctx - the registry's context; resolves the current initiator and the logger.
+ * @param build - constructs the payload from the owning session id, only when an append will be attempted.
+ */
+function appendSkillLoadedEvent(ctx: Context, build: (sessionId: string) => SkillLoadedEventData): void {
+  try {
+    const agent = ctx.get('agents')?.currentInitiator()
+    if (agent === undefined) return
+    agent.session.append('skill/loaded', build(agent.session.id))
+  } catch (error: unknown) {
+    ctx.logger.warn(`skill: skill/loaded log event failed: ${error instanceof Error ? error.message : String(error)}`)
   }
 }
 

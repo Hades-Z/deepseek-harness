@@ -34,6 +34,7 @@ import {
   type ToolExecution,
 } from '@deepseek-ai/dsh-tools'
 import { deniedDisplayReason } from './locales.ts'
+import type {} from '@deepseek-ai/dsh-workspace-changes/types'
 
 /** Structured error name persisted for every final reviewer denial. */
 const AUTO_REVIEW_DENIED_ERROR_NAME = 'AutoReviewDeniedError'
@@ -719,6 +720,39 @@ function failed(exec: ToolExecution, error: unknown): PreToolDecision {
   }
 }
 
+/* jscpd:ignore-start */
+/**
+ * Record this reviewer's own pre-execute vote. The append is contained so a
+ * logging failure cannot change the review outcome, the batch result, or event
+ * order; a call without an Agent has no Session to record into.
+ * @param ctx - plugin context supplying the logger.
+ * @param exec - the execution this listener decided on.
+ * @param decision - this reviewer's own decision.
+ * @param reason - the reviewer's reason, when it gave one.
+ */
+function recordPreExecuteDecision(
+  ctx: Context,
+  exec: ToolExecution,
+  decision: 'allow' | 'deny' | 'ask' | 'handled',
+  reason?: string,
+): void {
+  const session = exec.agent?.session
+  if (session === undefined) return
+  try {
+    session.append('tool/pre-execute-decision', {
+      listenerId: 'auto-review',
+      callId: exec.callId,
+      toolName: exec.name,
+      decision,
+      ...reason === undefined ? {} : { reason },
+      ...exec.log === undefined ? {} : { turn: exec.log.turn, step: exec.log.step },
+    })
+  } catch (error: unknown) {
+    ctx.logger.warn(`auto-review: tool/pre-execute-decision log event failed: ${error instanceof Error ? error.message : String(error)}`)
+  }
+}
+/* jscpd:ignore-end */
+
 /** Install the Auto preset and its review gate; preserve Session selection on application shutdown. */
 export function apply(ctx: Context): void {
   // Retain the injected service while this context drains on disposal.
@@ -755,15 +789,28 @@ export function apply(ctx: Context): void {
           (error: unknown) => ({ ok: false as const, error }),
         )
         if (isAborted(lifecycle.signal)) return { kind: 'cancel' }
-        if (!review.ok) return failed(exec, review.error)
+        if (!review.ok) {
+          const outcome = failed(exec, review.error)
+          recordPreExecuteDecision(ctx, exec, 'deny', outcome.kind === 'deny' ? outcome.reason : undefined)
+          return outcome
+        }
         const { decision } = review
         // The permission owner pins an approval policy into every published Session.
         if (decision.decision === 'deny' && ctx.approval.overrideOf(agent.session) === 'never') {
+          recordPreExecuteDecision(ctx, exec, 'deny', decision.reason)
           return denied(exec, decision.reason)
         }
         const downstream = await next()
         if (isAborted(lifecycle.signal)) return { kind: 'cancel' }
-        if (decision.decision === 'allow' || downstream.kind !== 'allow') return downstream
+        if (decision.decision === 'allow') {
+          recordPreExecuteDecision(ctx, exec, 'allow')
+          return downstream
+        }
+        if (downstream.kind !== 'allow') {
+          recordPreExecuteDecision(ctx, exec, 'deny', decision.reason)
+          return downstream
+        }
+        recordPreExecuteDecision(ctx, exec, 'ask', decision.reason)
         return askUser(exec, decision.reason)
       } finally {
         active.delete(completed.promise)

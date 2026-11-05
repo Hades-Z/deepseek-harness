@@ -11,9 +11,43 @@ import { randomUUID } from 'node:crypto'
 import type { Context } from '@deepseek-ai/cordis'
 import type { Agent } from '@deepseek-ai/dsh-agent'
 import { foldConsumedWork } from '@deepseek-ai/dsh-agent'
+import { errorChain } from '@deepseek-ai/dsh-llm'
+import type { MessageId } from '@deepseek-ai/dsh-llm'
 import type { SessionEvent, SessionId } from '@deepseek-ai/dsh-session'
 import { SubagentRunId } from './types.ts'
+import type { SubagentDelivery } from './control-types.ts'
 import type { SubagentResult, SubagentRunEndInfo, SubagentRunInfo } from './types.ts'
+
+declare module '@deepseek-ai/dsh-session/types' {
+  interface SessionEventMap {
+    /**
+     * Records one residency epoch's terminal outcome in the delegating parent's
+     * session, after the epoch's disposal outcome is known and the in-memory
+     * `subagent/end` edge is published. Local runs list every delivery the
+     * epoch admitted; external runs omit the list because their provider does
+     * not expose accepted input. Log-only: it carries no `surfaceOp` and never
+     * enters model history. Absence is not evidence of a run: an epoch that
+     * failed before residency published no edge and no record.
+     */
+    'subagent/run-end': {
+      /** Unique identity pairing this record with the epoch's lifecycle edges. */
+      runId: SubagentRunId
+      /** Provider name recorded when the child was first created. */
+      provider: string
+      /** The child's durable session id; external executions mint their own. */
+      id: SessionId
+      /** Whether the epoch owned a local Agent. */
+      local: boolean
+      /** The terminal stop reason derived from the run's own outcome. */
+      stopReason: SubagentResult['stopReason']
+      /**
+       * Every delivery this local epoch admitted, in acceptance order.
+       * Omitted for external runs, whose accepted input is unobservable here.
+       */
+      steers?: readonly { delivery: SubagentDelivery; messageId: MessageId }[]
+    }
+  }
+}
 
 /**
  * Lifecycle observer for one activation's residency epoch. Package-private: the
@@ -27,10 +61,19 @@ export interface ActivationObserver {
    */
   start(child?: Agent): void
   /**
+   * Record one delivery the resident epoch admitted, so {@link settle} lists it
+   * in the durable run-end fact. External epochs never accept manager
+   * deliveries, so they accumulate none.
+   * @param delivery - inbox destination the accepted delivery took.
+   * @param messageId - durable id of the accepted message.
+   */
+  recordSteer(delivery: SubagentDelivery, messageId: MessageId): void
+  /**
    * Publish the terminal edge exactly once, pairing this epoch's {@link start},
-   * after the disposal outcome is known. Called only for a resident epoch: a
-   * failure before residency publishes no edge, because inventing one would
-   * report a lifecycle the child never had.
+   * after the disposal outcome is known, and append the durable
+   * `subagent/run-end` fact to the delegating parent's session. Called only for
+   * a resident epoch: a failure before residency publishes no edge, because
+   * inventing one would report a lifecycle the child never had.
    * @param result - the captured result, with teardown failures applied.
    */
   settle(result: SubagentResult): void
@@ -88,29 +131,55 @@ export function createLifecycleEmitter(
 /**
  * Build the observer for one local or external activation's residency epoch. Creation failure before residency emits no lifecycle edge.
  * @param emit - the contained lifecycle emitter.
+ * @param logger - the service logger that contains run-end append failures.
  * @param provider - the provider name recorded in the durable descriptor.
  * @param childId - the durable child session id.
- * @param parent - the exact live direct parent keying scoped dispatch.
+ * @param parent - the exact live direct parent keying scoped dispatch; its session receives the run-end fact.
  * @returns the observer whose edges this epoch publishes.
  */
 export function createActivationObserver(
   emit: LifecycleEmitter,
+  logger: Context['logger'],
   provider: string,
   childId: SessionId,
   parent: Agent,
 ): ActivationObserver {
   const identity = { runId: SubagentRunId(randomUUID()), provider, id: childId, local: false }
+  /** Deliveries this epoch admitted, in acceptance order; external epochs accumulate none. */
+  const steers: { delivery: SubagentDelivery; messageId: MessageId }[] = []
+  /** Whether this epoch reached residency; an unstarted epoch publishes no lifecycle edge. */
+  let started = false
   return {
+    recordSteer: (delivery, messageId): void => {
+      steers.push({ delivery, messageId })
+    },
     start: (child?: Agent): void => {
+      started = true
       identity.local = child !== undefined
       emit('subagent/start', identity, parent)
     },
     settle: ({ stopReason, output }: SubagentResult): void => {
+      // Creation failure before residency (for example a failed catalog append)
+      // ends an epoch that never started; it owns neither an end edge nor a
+      // durable run-end fact.
+      if (!started) return
       emit('subagent/end', {
         ...identity,
         stopReason,
         ...output.length === 0 ? {} : { lastAssistantMessage: output },
       }, parent)
+      try {
+        parent.session.append('subagent/run-end', {
+          ...identity,
+          stopReason,
+          // A local epoch always lists its deliveries, even zero of them; an
+          // external epoch never accepts manager deliveries, so its list is
+          // unobservable and stays omitted.
+          ...identity.local ? { steers: [...steers] } : {},
+        })
+      } catch (error: unknown) {
+        logger.warn(`subagent "${childId}": the run outcome was not recorded as subagent/run-end: ${errorChain(error)}`)
+      }
     },
   }
 }

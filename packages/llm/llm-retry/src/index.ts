@@ -13,9 +13,9 @@ import type { Agent, RequestErrorAction } from '@deepseek-ai/dsh-agent'
 import type { LlmFailure, ResolvedRetryPolicy } from '@deepseek-ai/dsh-llm'
 import type {} from '@deepseek-ai/dsh-session-projection'
 import { RetryId } from './brand.ts'
-import type { LlmRetryEventData } from './types.ts'
+import type { LlmRetryEventData, RetryLoopFacts } from './types.ts'
 
-export type { LlmRetryEventData, LlmRetryStartedEventData } from './types.ts'
+export type { LlmRetryEventData, LlmRetryStartedEventData, RetryLoopFacts } from './types.ts'
 export { RetryId } from './brand.ts'
 
 export const name = 'llm-retry'
@@ -154,6 +154,7 @@ export async function apply(ctx: Context, config: Config = {}, internals: RetryI
     retry: number,
     retryId: RetryId,
     delayMs: number,
+    facts: RetryLoopFacts,
     signal: AbortSignal,
   ): Promise<RequestErrorAction> {
     const fusedSignal = AbortSignal.any([signal, lifetime.signal])
@@ -169,6 +170,7 @@ export async function apply(ctx: Context, config: Config = {}, internals: RetryI
         maxRetries: policy.maxRetries,
         delayMs,
         failure,
+        ...facts,
       }
       : {
         retryId,
@@ -180,15 +182,16 @@ export async function apply(ctx: Context, config: Config = {}, internals: RetryI
         retry,
         delayMs,
         failure,
+        ...facts,
       }
     agent.session.append('llm/retry', eventData)
     if (!await cancellableDelay(delayMs, fusedSignal)) return
-    agent.session.append('llm/retry-started', { retryId, turn, step, retry })
+    agent.session.append('llm/retry-started', { retryId, turn, step, retry, ...facts })
     return { kind: 'retry' }
   }
 
   async function recover(
-    { agent, turn, step, provider, failure, retryPolicy: policy, signal }: Parameters<Events['agent/request-error']>[0],
+    { agent, turn, step, provider, failure, retryPolicy: policy, assemblyDigest, compactionGeneration, signal }: Parameters<Events['agent/request-error']>[0],
     next: () => Promise<RequestErrorAction>,
   ): Promise<RequestErrorAction> {
     if (policy === undefined) return next()
@@ -221,20 +224,29 @@ export async function apply(ctx: Context, config: Config = {}, internals: RetryI
     const retry = previousRetry + 1
     const retryId = previous?.retryId ?? RetryId(randomUUID())
     let delayMs: number
+    let trigger: RetryLoopFacts['trigger']
     if (failure.providerRetryAfterMs !== undefined
       && Number.isFinite(failure.providerRetryAfterMs)
       && failure.providerRetryAfterMs > 0) {
       if (failure.providerRetryAfterMs > policy.maxDelayMs) {
         if (policy.mode === 'normal') return next()
         delayMs = localDelay(policy, retry, random)
+        trigger = 'policy-backoff'
       } else {
         delayMs = failure.providerRetryAfterMs
+        trigger = 'provider-retry-after'
       }
     } else {
       delayMs = localDelay(policy, retry, random)
+      trigger = 'policy-backoff'
     }
 
-    return backoff(agent, turn, step, failure, provider, policy, policyKey, retry, retryId, delayMs, signal)
+    const facts: RetryLoopFacts = {
+      trigger,
+      ...(assemblyDigest === undefined ? {} : { assemblyDigest }),
+      ...(compactionGeneration === undefined ? {} : { compactionGeneration }),
+    }
+    return backoff(agent, turn, step, failure, provider, policy, policyKey, retry, retryId, delayMs, facts, signal)
   }
 
   const disposeListener = ctx.on('agent/request-error', (

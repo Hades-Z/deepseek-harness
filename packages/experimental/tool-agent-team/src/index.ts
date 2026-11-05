@@ -192,6 +192,8 @@ To message another teammate, use send_message({ target: "<teammate name>", messa
     register(scoped.tools.register(defineTool({
       name: 'spawn_teammate',
       description: 'Create one named, durable teammate. Only the Team Lead may call this tool.',
+      // Trajectory provenance: names this package as the settled call's owner.
+      pluginOwner: '@deepseek-ai/dsh-experimental-tool-agent-team',
       parameters: {
         name: { type: 'string', required: true, description: 'Unique lower-kebab-case teammate name.' },
         description: { type: 'string', required: true, description: 'Short description of the delegated responsibility.' },
@@ -221,6 +223,8 @@ To message another teammate, use send_message({ target: "<teammate name>", messa
     register(scoped.tools.register(defineTool({
       name: 'send_message',
       description: 'Send one message to another Team member. A running target receives it at the nearest step boundary; an inactive target starts or resumes a turn.',
+      // Trajectory provenance: names this package as the settled call's owner.
+      pluginOwner: '@deepseek-ai/dsh-experimental-tool-agent-team',
       parameters: {
         target: { type: 'string', required: true, description: 'Member target returned by spawn_teammate or list_agents, including lead.' },
         message: { type: 'string', required: true, description: 'Self-contained message for the target.' },
@@ -239,6 +243,8 @@ To message another teammate, use send_message({ target: "<teammate name>", messa
     register(scoped.tools.register(defineTool({
       name: 'list_agents',
       description: 'List the Lead and every durable teammate with an addressable target and current availability. inactive means no turn is executing, not a task result. provisioning and failed describe member creation.',
+      // Trajectory provenance: names this package as the settled call's owner.
+      pluginOwner: '@deepseek-ai/dsh-experimental-tool-agent-team',
       parameters: {},
       output: jsonOutput(MEMBER_LIST_VALUE_SCHEMA),
       execute(_args, exec) {
@@ -249,6 +255,8 @@ To message another teammate, use send_message({ target: "<teammate name>", messa
     register(scoped.tools.register(defineTool({
       name: 'wait_agent',
       description: 'Wait for the next teammate status, message, or shared-task change after this call starts. This never wakes inactive members and returns noProgress immediately when no other member is running or provisioning. Re-list after wakeup or timeout instead of polling.',
+      // Trajectory provenance: names this package as the settled call's owner.
+      pluginOwner: '@deepseek-ai/dsh-experimental-tool-agent-team',
       parameters: {
         timeout_ms: {
           type: 'integer',
@@ -285,6 +293,8 @@ To message another teammate, use send_message({ target: "<teammate name>", messa
       register(scoped.tools.register(defineTool({
         name: 'interrupt_agent',
         description: 'Interrupt one teammate\'s current turn while preserving its pending inbox. Team Lead only.',
+        // Trajectory provenance: names this package as the settled call's owner.
+        pluginOwner: '@deepseek-ai/dsh-experimental-tool-agent-team',
         parameters: {
           target: { type: 'string', required: true, description: 'Teammate target returned by spawn_teammate or list_agents.' },
         },
@@ -298,6 +308,8 @@ To message another teammate, use send_message({ target: "<teammate name>", messa
     register(scoped.tools.register(defineTool({
       name: 'team_task_create',
       description: 'Create one unowned pending task on the shared Team task board.',
+      // Trajectory provenance: names this package as the settled call's owner.
+      pluginOwner: '@deepseek-ai/dsh-experimental-tool-agent-team',
       parameters: {
         subject: { type: 'string', required: true, description: 'Concise task title.' },
         description: { type: 'string', required: true, description: 'Complete task details and acceptance criteria.' },
@@ -322,6 +334,8 @@ To message another teammate, use send_message({ target: "<teammate name>", messa
     register(scoped.tools.register(defineTool({
       name: 'team_task_list',
       description: 'List shared tasks, including readiness, owner, revision, blockers, and write-scope warnings.',
+      // Trajectory provenance: names this package as the settled call's owner.
+      pluginOwner: '@deepseek-ai/dsh-experimental-tool-agent-team',
       parameters: {
         status: {
           type: 'string',
@@ -354,6 +368,8 @@ To message another teammate, use send_message({ target: "<teammate name>", messa
     register(scoped.tools.register(defineTool({
       name: 'team_task_get',
       description: 'Read the complete latest value of one shared task before changing or executing it.',
+      // Trajectory provenance: names this package as the settled call's owner.
+      pluginOwner: '@deepseek-ai/dsh-experimental-tool-agent-team',
       parameters: {
         task_id: { type: 'string', required: true, description: 'Shared task id.' },
       },
@@ -369,6 +385,8 @@ To message another teammate, use send_message({ target: "<teammate name>", messa
     register(scoped.tools.register(defineTool({
       name: 'team_task_update',
       description: 'Compare-and-set a shared task action using the latest revision from team_task_get or team_task_list.',
+      // Trajectory provenance: names this package as the settled call's owner.
+      pluginOwner: '@deepseek-ai/dsh-experimental-tool-agent-team',
       parameters: {
         task_id: { type: 'string', required: true, description: 'Shared task id.' },
         expected_revision: { type: 'integer', required: true, description: 'Current task revision used as the CAS precondition.' },

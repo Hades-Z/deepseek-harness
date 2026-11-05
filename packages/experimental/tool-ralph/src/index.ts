@@ -410,6 +410,8 @@ export function apply(ctx: Context, config: Config): void {
   ctx.tools.register(defineTool({
     name: 'ralph',
     description: DESCRIPTION,
+    // Trajectory provenance: names this package as the settled call's owner.
+    pluginOwner: '@deepseek-ai/dsh-tool-ralph',
     parameters: {
       objective: {
         type: 'string',

@@ -4,7 +4,7 @@ import { HarnessError } from '@deepseek-ai/dsh-llm'
 import type { ContentBlock, ToolSchema } from '@deepseek-ai/dsh-llm'
 import { snapshotJsonValue } from '@deepseek-ai/dsh-util-values'
 import type { JsonValue } from '@deepseek-ai/dsh-util-values'
-import type { ToolDefinition, ToolExecution, ToolExecutionResult, ToolRunContext, ToolResult } from './contracts.ts'
+import type { ToolDefinition, ToolExecution, ToolExecutionResult, ToolRetryPolicy, ToolRunContext, ToolResult } from './contracts.ts'
 import { assertSupportedJsonSchema, isJsonSchemaRecord, isPlainJsonArray, JsonSchemaError, validateJsonSchemaValue } from './json-schema.ts'
 import type { JsonSchemaNode, JsonSchemaScalar, ObjectJsonSchema } from './json-schema.ts'
 import type { ToolCallView, ToolResultView } from './presentation.ts'
@@ -502,6 +502,15 @@ export interface DefineToolOptions<S extends ParameterSchemaSpec, O extends Valu
   /** Optional positive cooperative timeout budget in milliseconds. */
   readonly timeoutMs?: number
   /**
+   * Opt-in retry budget for this tool body; omit to dispatch exactly once.
+   * Declaring it asserts the body is replayable, side effects included.
+   */
+  readonly retry?: ToolRetryPolicy
+  /** Plugin id owning this definition, recorded in `tool/result-attribution`; see {@link ToolDefinition.pluginOwner}. */
+  readonly pluginOwner?: string
+  /** Provider id this definition dispatches through, recorded in `tool/result-attribution`; see {@link ToolDefinition.providerId}. */
+  readonly providerId?: string
+  /**
    * Pure classifier for sibling overlap.
    * @param args - typed validated arguments.
    * @returns Whether the call may join a parallel group.
@@ -575,6 +584,15 @@ export function defineTool<const S extends ParameterSchemaSpec, const O extends 
   if (options.timeoutMs !== undefined && (!Number.isFinite(options.timeoutMs) || options.timeoutMs <= 0)) {
     throw new Error(`defineTool(${options.name}): timeoutMs must be a positive finite number`)
   }
+  if (options.retry !== undefined) {
+    if (!Number.isInteger(options.retry.maxAttempts) || options.retry.maxAttempts < 1) {
+      throw new Error(`defineTool(${options.name}): retry.maxAttempts must be a positive integer`)
+    }
+    if (options.retry.backoffMs !== undefined
+      && (!Number.isFinite(options.retry.backoffMs) || options.retry.backoffMs < 0)) {
+      throw new Error(`defineTool(${options.name}): retry.backoffMs must be a non-negative finite number`)
+    }
+  }
   const parameters = parameterSchemaSpecToJsonSchema(options.parameters)
   const outputSchema = valueSchemaSpecToJsonSchema(options.output.schema)
   const validate = (args: unknown): string[] => validateJsonSchemaValue(parameters, args, '')
@@ -595,6 +613,9 @@ export function defineTool<const S extends ParameterSchemaSpec, const O extends 
     },
     ...(options.deferLoading === true ? { deferLoading: options.deferLoading } : {}),
     ...(options.timeoutMs !== undefined ? { timeoutMs: options.timeoutMs } : {}),
+    ...(options.retry !== undefined ? { retry: options.retry } : {}),
+    ...(options.pluginOwner !== undefined ? { pluginOwner: options.pluginOwner } : {}),
+    ...(options.providerId !== undefined ? { providerId: options.providerId } : {}),
     async execute(args: unknown, exec: ToolRunContext): Promise<JsonValue> {
       const violations = validate(args)
       if (violations.length > 0) throw new ToolArgsError(violations)

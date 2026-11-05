@@ -233,6 +233,13 @@ describe('provider-routed retry policy', () => {
       maxRetries: 2,
       delayMs: 500,
       failure: { message: 'busy', code: 'RATE_LIMIT', status: 429 },
+      // Why the delay took its value: no provider retry-after header, so the
+      // local backoff policy computed it.
+      trigger: 'policy-backoff',
+      // Loop-supplied correlation fields: the rendered-prompt digest of the
+      // retried step and the session surface generation when it assembled.
+      assemblyDigest: expect.any(String),
+      compactionGeneration: 0,
     })
     expect(adapter.requests).toHaveLength(1)
     await vi.advanceTimersByTimeAsync(499)

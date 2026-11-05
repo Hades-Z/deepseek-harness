@@ -42,6 +42,8 @@ export function apply(ctx: Context, config: Config): void {
       + 'If the user needs to review files earlier, such as before a tool call that waits for their answer, link them in your message instead. '
       + 'Use it when the user needs a separate file, especially Office documents, spreadsheets, and slide decks; '
       + 'prefer your final response when that suffices. The user opens the current files; their contents are not copied.',
+    // Trajectory provenance: names this package as the settled call's owner.
+    pluginOwner: '@deepseek-ai/dsh-tool-present',
     parameters: {
       files: {
         type: 'array', required: true,

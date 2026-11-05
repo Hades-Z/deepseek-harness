@@ -64,6 +64,8 @@ The policy accepts text/image sequences. Results within budget, `read`, blocked 
 
 A missing owner or spill backend, failed storage, missing route image pricing, or unavailable execution-world image path logs a warning and keeps the original content. The policy never substitutes an unreadable path for an image.
 
+Each successful spill also appends one log-only `spill/spilled` Session record with the threshold, artifact locator and bytes, and omitted text/image counts. A failed append warns and leaves the replacement unchanged; a call without an owning session records nothing.
+
 ### The durable log copy
 
 PTC programs receive complete canonical values. Image-bearing sub-results are bounded before forwarding to the model; when every image is omitted, the model still receives the retained text and recovery notice. The dispatch log uses the same retained content. Text-only sub-call logs, including `read`, are bounded asynchronously without delaying program values.

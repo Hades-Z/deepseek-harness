@@ -190,6 +190,10 @@ registerFetchProvider(provider: WebFetchProvider): () => void
  * time with the selection rules above; throws {@link WebError} when the
  * capability cannot run. The seam enforces `request.maxResults` on the result:
  * if the provider over-returns, `sources[]` is truncated and `truncated` set.
+ * The resolved selection appends a log-only `tool/provider-selected` record,
+ * and the settled provider call a log-only `web/search-route` record (real
+ * elapsed time and outcome); both appends are contained and never change this
+ * result or exception.
  * @param request - the query and optional result limit.
  * @param signal - optional cancellation signal forwarded to the provider.
  * @returns the provider's results, capped to `request.maxResults`.
@@ -210,6 +214,8 @@ async searchReady(llmProvider?: string): Promise<boolean>
  * Retrieve one URL through the selected provider. Resolves the provider at
  * call time with the selection rules above; throws {@link WebError} when the
  * capability cannot run. A non-2xx response is a result, not a throw.
+ * The resolved selection appends a log-only `tool/provider-selected` record;
+ * the append is contained and never changes this result or exception.
  * @param request - the URL plus retrieval options.
  * @param signal - optional cancellation signal forwarded to the provider.
  * @returns the retrieval outcome; non-2xx responses resolve descriptively.

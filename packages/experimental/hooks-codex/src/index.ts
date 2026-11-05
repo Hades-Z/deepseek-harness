@@ -13,7 +13,7 @@
 /* jscpd:ignore-start */
 import type {} from '@deepseek-ai/dsh-working-directory'
 import { readFileSync } from 'node:fs'
-import type { Context } from '@deepseek-ai/cordis'
+import type { Context, LoggerService } from '@deepseek-ai/cordis'
 import z from '@deepseek-ai/schemastery'
 import type { Agent, PreStepDecision } from '@deepseek-ai/dsh-agent'
 import { createUserMessage } from '@deepseek-ai/dsh-llm'
@@ -26,7 +26,9 @@ declare module '@deepseek-ai/dsh-llm' {
 
 import type { ContentBlock, MessageSource } from '@deepseek-ai/dsh-llm'
 import type { UserMessage } from '@deepseek-ai/dsh-session'
+import type { TurnStoppingEventData } from '@deepseek-ai/dsh-agent-loop'
 import type { PostToolDecision, PreToolDecision, ToolExecution, ToolExecutionResult } from '@deepseek-ai/dsh-tools'
+import type {} from '@deepseek-ai/dsh-workspace-changes/types'
 import {
   appendHookInvoked,
   appendHookResult,
@@ -76,12 +78,62 @@ function nextHandlerId(point: string): string {
 
 const CONTEXT_SOURCE: MessageSource = { kind: 'hooks-codex' }
 
+/* jscpd:ignore-start */
+/**
+ * Record this bridge's turn-stopping vote. The vote reports an already-settled
+ * fact, so a logging failure warns and leaves the turn's boundary unchanged.
+ * @param logger - the service logger; warns on a failed append.
+ * @param agent - the stopping agent whose session receives the vote.
+ * @param vote - the bridge's own report for the boundary.
+ */
+function appendStoppingVote(logger: LoggerService, agent: Agent, vote: TurnStoppingEventData): void {
+  try {
+    agent.session.append('turn/stopping', vote)
+  } catch (error: unknown) {
+    logger.warn(`hooks-codex: turn/stopping log event failed: ${error instanceof Error ? error.message : String(error)}`)
+  }
+}
+/* jscpd:ignore-end */
+
 /** The summary cap bounds a persisted event field — a positive integer or the slice misbehaves silently. */
 function assertPositiveInteger(name: string, value: number): void {
   if (!Number.isInteger(value) || value < 1) {
     throw new Error(`hooks-codex: ${name} must be a positive integer`)
   }
 }
+
+/* jscpd:ignore-start */
+/**
+ * Record this bridge's own pre-execute vote. The append is contained so a
+ * logging failure cannot change the decision, the batch outcome, or event order;
+ * a call without an Agent has no Session to record into.
+ * @param ctx - plugin context supplying the logger.
+ * @param exec - the execution this listener decided on.
+ * @param decision - this listener's own decision.
+ * @param reason - the reason this listener attached, when it has one.
+ */
+function recordPreExecuteDecision(
+  ctx: Context,
+  exec: ToolExecution,
+  decision: 'allow' | 'deny' | 'ask' | 'handled',
+  reason?: string,
+): void {
+  const session = exec.agent?.session
+  if (session === undefined) return
+  try {
+    session.append('tool/pre-execute-decision', {
+      listenerId: 'hooks-codex',
+      callId: exec.callId,
+      toolName: exec.name,
+      decision,
+      ...reason === undefined ? {} : { reason },
+      ...exec.log === undefined ? {} : { turn: exec.log.turn, step: exec.log.step },
+    })
+  } catch (error: unknown) {
+    ctx.logger.warn(`hooks-codex: tool/pre-execute-decision log event failed: ${error instanceof Error ? error.message : String(error)}`)
+  }
+}
+/* jscpd:ignore-end */
 
 export function apply(ctx: Context, config: Config): void {
   // Validate before config parsing so a bad value cannot be hidden by its early return.
@@ -228,7 +280,11 @@ export function apply(ctx: Context, config: Config): void {
     const turn = lastTurn(ctx, exec.agent)
     const merged = await runPoint('PreToolUse', exec.name, preToolPayload(ctx, exec, model), { ...exec.agent ? { agent: exec.agent } : {}, turn, signal: exec.signal })
     /* jscpd:ignore-end */
-    if (merged.decision === 'deny') return { kind: 'deny', reason: merged.reason ?? 'blocked by PreToolUse hook' }
+    if (merged.decision === 'deny') {
+      const reason = merged.reason ?? 'blocked by PreToolUse hook'
+      recordPreExecuteDecision(ctx, exec, 'deny', reason)
+      return { kind: 'deny', reason }
+    }
     return next()
   })
 
@@ -262,13 +318,21 @@ export function apply(ctx: Context, config: Config): void {
   ctx.on('agent/turn-stopping', async ({ agent, turn, signal }): Promise<void> => {
     const merged = await runPoint('Stop', '', { ...turnBase(ctx, agent, 'Stop', model), stop_hook_active: false, last_assistant_message: null }, { agent, turn, signal })
     /* jscpd:ignore-end */
+    let steering: UserMessage | undefined
     if (merged.decision === 'deny') {
       // A blocking Stop hook forces continuation; a block with no reason (exit 2,
       // empty stderr) still forces it — fall back to a generic steering line
       // rather than letting the turn stop.
       const text = merged.reason ?? 'continue: blocked by Stop hook'
-      agent.steer(createUserMessage({ content: [{ type: 'text', text }], source: CONTEXT_SOURCE }))
+      steering = createUserMessage({ content: [{ type: 'text', text }], source: CONTEXT_SOURCE })
+      agent.steer(steering)
     }
+    appendStoppingVote(ctx.logger, agent, {
+      turn,
+      source: name,
+      outcome: steering === undefined ? 'stop' : 'continue',
+      ...steering === undefined ? {} : { steeringMessageIds: [steering.id] },
+    })
   })
 }
 

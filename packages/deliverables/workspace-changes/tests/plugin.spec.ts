@@ -243,6 +243,29 @@ describe('workspace-changes in a repository', () => {
     expect(changes(ctx, session).filter(data => data.turn === 3)).toEqual([])
   })
 
+  it('records its stop vote on the stopping boundary after its own in-turn record', async () => {
+    const cwd = await repository()
+    const { ctx } = await boot()
+    const session = ctx.sessions.create(SessionId('stop-vote'), { meta: { cwd } })
+    const agent = { session } as never
+    startTurn(session, 1)
+    await settle(ctx, session)
+    await writeFile(join(cwd, 'voted.txt'), 'v\n')
+    toolCall(session, 1, 'bash', { command: 'x' })
+    await ctx.serial('agent/turn-stopping', { agent, turn: 1, signal })
+    const recorded = session.snapshotEvents().find(event => event.type === 'workspace/changes')
+    const vote = session.snapshotEvents().find(event => event.type === 'turn/stopping')
+    expect(vote?.data).toEqual({ turn: 1, source: 'workspace-changes', outcome: 'stop' })
+    expect(recorded!.seq).toBeLessThan(vote!.seq)
+  })
+
+  it('writes no vote for a session it is not recording', async () => {
+    const { ctx } = await boot()
+    const session = ctx.sessions.create(SessionId('unrecorded'))
+    await ctx.serial('agent/turn-stopping', { agent: { session } as never, turn: 1, signal })
+    expect(session.snapshotEvents().some(event => event.type === 'turn/stopping')).toBe(false)
+  })
+
   it('keeps an interrupted turn’s record when the next turn starts before it settles', async () => {
     const cwd = await repository()
     const { ctx } = await boot()
@@ -478,6 +501,20 @@ describe('workspace-changes without a repository', () => {
       await rm(join(cwd, 'w.txt'))
     }
     await ctx.waterfall('tools/pre-execute', {} as never, () => Promise.resolve(undefined as never))
+    expect(sessions.flatMap(session => session.snapshotEvents().filter(event => event.type === 'tool/pre-execute-decision'))).toEqual([])
+  })
+
+  it('records its own handled pre-execute vote for a call it tracks', async () => {
+    const cwd = await repository()
+    const { ctx } = await boot()
+    const session = ctx.sessions.create(SessionId('vote'), { meta: { cwd } })
+    startTurn(session, 1)
+    await settle(ctx, session)
+
+    const vote = session.snapshotEvents().find(event => event.type === 'tool/pre-execute-decision')
+    expect(vote?.type === 'tool/pre-execute-decision' && vote.data).toMatchObject({
+      listenerId: 'workspace-changes', toolName: 'bash', decision: 'handled',
+    })
   })
 })
 

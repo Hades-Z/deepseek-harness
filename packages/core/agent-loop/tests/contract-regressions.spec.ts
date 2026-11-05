@@ -343,6 +343,30 @@ describe('steering from late extension points is never stranded', () => {
     expect(JSON.stringify(adapter.requests[1]!.messages)).toContain('one more thing')
   })
 
+  it('records one settled turn/stopping summary per stop boundary', async () => {
+    const adapter = new MockAdapter([textResponse('one'), textResponse('two')])
+    const ctx = await harness(adapter)
+    const agent = await ctx.agentLoop.create(SessionId('stop-summary'), { provider: 'mock', model: 'mock' })
+    const steered = createUserMessage({ content: [{ type: 'text', text: 'keep going' }], source: { kind: 'user' } })
+    let steeredOnce = false
+    ctx.on('agent/turn-stopping', () => {
+      if (steeredOnce) return
+      steeredOnce = true
+      agent.steer(steered)
+    })
+
+    send(agent, 'go')
+    await waitForIdle(ctx, agent)
+
+    const summaries = agent.session.snapshotEvents()
+      .filter(event => event.type === 'turn/stopping')
+      .map(event => event.type === 'turn/stopping' ? event.data : undefined)
+    expect(summaries).toEqual([
+      { turn: 1, step: 1, source: 'agent-loop', outcome: 'continue', steeringMessageIds: [steered.id] },
+      { turn: 1, step: 2, source: 'agent-loop', outcome: 'stop' },
+    ])
+  })
+
 })
 
 describe('plugin exceptions are contained', () => {

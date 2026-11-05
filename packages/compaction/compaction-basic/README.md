@@ -134,6 +134,8 @@ Failed summary requests dispatch synchronous `compaction/summary-error` after ch
 
 The transaction validates the surface span and the durable lock, appends `compaction/start`, summarizes through the hook, revalidates stability (whole-surface for automatic calls, selected-span for manual calls), rejects a summary that does not shrink its source, appends `compaction/summary` plus the replacement `user/message`, and makes exactly one `compaction/end` attempt. A live unmatched start is the durable lock: an unmatched marker before a newer `session/end-seed` is stale evidence from a prior lifecycle and does not block; one after that boundary reports `busy`. A failed close deliberately leaves a blocking orphan. Cancellation remains authoritative after cleanup and durability.
 
+Each bracket also records why it ran (`trigger` and `autoCaller` on `compaction/start`) and the retry facts visible when it closed (`generationAdvanced`, `retryDecision`, `recovered` on `compaction/end`); these observation fields are informational and never drive recovery.
+
 ### Config resolution
 
 `resolveConfig` validates and detaches defaults, `resolveTargetPolicy` merges exact provider/model overrides, and `resolveCompactSpec` requires explicit adapter capacity and routed output reservation to resolve the trigger and retained budget. The effective envelope’s `maxTokens` supplies that reservation, falling back to the adapter default and then zero. Model discovery (`listModels()`) is never consulted for policy; capacity comes from the durable route or the proposed destination during a model switch.

@@ -108,14 +108,23 @@ const contexts: Context[] = []
 const ambientAnthropicModel = process.env.ANTHROPIC_MODEL
 const ambientAnthropicSmallFastModel = process.env.ANTHROPIC_SMALL_FAST_MODEL
 
+// A run started from inside Claude Code (the VS Code extension, or an agent
+// session) exports this entrypoint marker; the spawned CLI inherits it, decides
+// the surrounding product already authenticated the session, and rejects the
+// fixture's injected fake key as "Not logged in" before reading any fixture
+// response. The suite owns one fake key, so it clears the ambient marker.
+const ambientClaudeCodeEntrypoint = process.env.CLAUDE_CODE_ENTRYPOINT
+
 beforeAll(() => {
   delete process.env.ANTHROPIC_MODEL
   delete process.env.ANTHROPIC_SMALL_FAST_MODEL
+  delete process.env.CLAUDE_CODE_ENTRYPOINT
 })
 
 afterAll(() => {
   if (ambientAnthropicModel !== undefined) process.env.ANTHROPIC_MODEL = ambientAnthropicModel
   if (ambientAnthropicSmallFastModel !== undefined) process.env.ANTHROPIC_SMALL_FAST_MODEL = ambientAnthropicSmallFastModel
+  if (ambientClaudeCodeEntrypoint !== undefined) process.env.CLAUDE_CODE_ENTRYPOINT = ambientClaudeCodeEntrypoint
 })
 
 afterEach(async () => {

@@ -274,6 +274,33 @@ export class UserQuestionService extends TypertRemoteService {
   }
 
   /**
+   * Append the contained `user-question/answered` record after the ask
+   * settled. Failure is logged and never changes the returned answer or the
+   * propagated exception; nothing is written without an agent (no Session to
+   * record against). `answeredBy` rides the dispatched request object, so a
+   * claiming listener's self-report is visible here.
+   */
+  private recordAnswer(
+    agent: Agent | undefined,
+    request: AskUserQuestionRequestEvent,
+    answer: AskUserQuestionAnswer,
+  ): void {
+    if (agent === undefined) return
+    try {
+      agent.session.append('user-question/answered', {
+        ...request.wait?.callId !== undefined ? { callId: request.wait.callId } : {},
+        answers: answer.answers,
+        ...request.answeredBy === undefined ? {} : { answeredBy: request.answeredBy },
+        answeredAt: Date.now(),
+      })
+    } catch (error: unknown) {
+      // The answer already belongs to the caller; a failed observation must
+      // not change it or the tool result it feeds.
+      this.ctx.logger.warn('user-questions: failed to record user-question/answered: %o', error)
+    }
+  }
+
+  /**
    * Ask the scoped answerer waterfall and wait for the user's answer.
    *
    * When a caller supplies an agent, human interaction is valid only for the
@@ -281,6 +308,11 @@ export class UserQuestionService extends TypertRemoteService {
    * decides this boundary: an owned child has no human answerer and would
    * block forever, while a lineage-bearing session resumed as a new runtime
    * root may ask normally.
+   *
+   * After the answer settles, the service appends a log-only
+   * `user-question/answered` audit record to the agent's Session (warn-only on
+   * failure, never without an agent); a rejected, aborted, or timed-out ask
+   * records nothing.
    *
    * @param request Questions, owner agent, and abort signal.
    * @returns The answer chosen or typed by the human.
@@ -342,15 +374,18 @@ export class UserQuestionService extends TypertRemoteService {
       'no user-questions answerer accepted the request',
       'NO_PROVIDER',
     ))
+    const dispatched = agent === undefined ? request : { ...request, agent }
     try {
-      return await (agent === undefined
-        ? this.ctx.waterfall('user-questions/request', request, noAnswerer)
+      const answer = await (agent === undefined
+        ? this.ctx.waterfall('user-questions/request', dispatched, noAnswerer)
         : this.ctx.waterfall(
           scopeTarget(agent, agent),
           'user-questions/request',
-          { ...request, agent },
+          dispatched,
           noAnswerer,
         ))
+      this.recordAnswer(agent, dispatched, answer)
+      return answer
     } catch (error) {
       const restored = restoreUserQuestionError(error)
       if (restored instanceof UserQuestionError) throw restored

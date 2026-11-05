@@ -2,19 +2,25 @@
  * Service Definition for the web access capability seam (`ctx.web`): registries and provider-selecting execution for search and
  * fetch. Duplicate ids are rejected. At execution time, a configured provider must exist and
  * be usable; without one, exactly one usable provider is required, so selection never depends
- * on registration order.
+ * on registration order. A resolved selection appends a log-only `tool/provider-selected`
+ * record (the lsp query route appends the same event with capability `lsp`), and a settled
+ * search a log-only `web/search-route` record with the single route's real elapsed time and
+ * outcome; all appends are contained and never change the service's returns or exceptions.
  * @module @deepseek-ai/dsh-web
  */
 
 import { Context, Service, type Volatile } from '@deepseek-ai/cordis'
+import type {} from '@deepseek-ai/dsh-agent'
 import z from '@deepseek-ai/schemastery'
 import type {
+  ToolProviderSelectionMode,
   WebFetchProvider,
   WebFetchRequest,
   WebFetchResult,
   WebSearchProvider,
   WebSearchRequest,
   WebSearchResult,
+  WebSearchRouteEventData,
 } from './types.ts'
 import { WebError } from './types.ts'
 
@@ -22,6 +28,9 @@ export {
   WebError,
 } from './types.ts'
 export type {
+  ToolProviderSelectedCapability,
+  ToolProviderSelectedEventData,
+  ToolProviderSelectionMode,
   WebFetchBody,
   WebFetchProvider,
   WebFetchRequest,
@@ -29,6 +38,7 @@ export type {
   WebSearchProvider,
   WebSearchRequest,
   WebSearchResult,
+  WebSearchRouteEventData,
   WebSearchSource,
 } from './types.ts'
 
@@ -44,6 +54,20 @@ interface Selection<P> {
   readonly configuredId?: string
   /** Providers registered for this capability kind. */
   readonly providers: ReadonlyMap<string, P>
+}
+
+/** The selection modes a web operation can report; an lsp query additionally routes by extension. */
+type WebSelectionMode = Exclude<ToolProviderSelectionMode, 'extension-route'>
+
+/**
+ * Real elapsed milliseconds since a `performance.now()` stamp, rounded to whole
+ * milliseconds. Monotonic, so a wall-clock adjustment cannot produce a negative
+ * duration in a `web/search-route` record.
+ * @param startedAt - the `performance.now()` stamp the interval starts at.
+ * @returns the non-negative elapsed milliseconds.
+ */
+function elapsedMsSince(startedAt: number): number {
+  return Math.round(performance.now() - startedAt)
 }
 
 /**
@@ -135,13 +159,26 @@ export class WebRuntime extends Service {
    * time with the selection rules above; throws {@link WebError} when the
    * capability cannot run. The seam enforces `request.maxResults` on the result:
    * if the provider over-returns, `sources[]` is truncated and `truncated` set.
+   * The resolved selection appends a log-only `tool/provider-selected` record,
+   * and the settled provider call a log-only `web/search-route` record (real
+   * elapsed time and outcome); both appends are contained and never change this
+   * result or exception.
    * @param request - the query and optional result limit.
    * @param signal - optional cancellation signal forwarded to the provider.
    * @returns the provider's results, capped to `request.maxResults`.
    */
   async search(request: WebSearchRequest, signal?: AbortSignal): Promise<WebSearchResult> {
-    const result = await this.selectSearchProvider().search(request, signal)
-    return capSources(result, request.maxResults)
+    const { provider, selectionMode } = this.selectSearchProvider()
+    this.appendProviderSelected('web-search', provider.id, selectionMode)
+    const startedAt = performance.now()
+    try {
+      const result = await provider.search(request, signal)
+      this.appendSearchRoute(provider.id, selectionMode, elapsedMsSince(startedAt), 'ok')
+      return capSources(result, request.maxResults)
+    } catch (error: unknown) {
+      this.appendSearchRoute(provider.id, selectionMode, elapsedMsSince(startedAt), 'error')
+      throw error
+    }
   }
 
   /**
@@ -153,28 +190,38 @@ export class WebRuntime extends Service {
    * @returns false only when the selected provider reports that it cannot authenticate.
    */
   async searchReady(llmProvider?: string): Promise<boolean> {
-    return await selectedProviderReady(() => this.selectSearchProvider(), llmProvider)
+    return await selectedProviderReady(() => this.selectSearchProvider().provider, llmProvider)
   }
 
-  /** Select the search provider with the rules above, throwing the matching {@link WebError}. */
-  private selectSearchProvider(): WebSearchProvider {
+  /**
+   * Select the search provider with the rules above, throwing the matching {@link WebError}.
+   * @returns the selected provider plus how it won (configured id or sole usable registration).
+   */
+  private selectSearchProvider(): { provider: WebSearchProvider; selectionMode: WebSelectionMode } {
     const configuredId = this.config.searchProvider.get() ?? this.searchProviderEnv
-    return resolveProvider({
-      providers: this.searchProviders,
-      ...configuredId !== undefined ? { configuredId } : {},
-    })
+    return {
+      provider: resolveProvider({
+        providers: this.searchProviders,
+        ...configuredId !== undefined ? { configuredId } : {},
+      }),
+      selectionMode: configuredId !== undefined ? 'configured' : 'auto-single',
+    }
   }
 
   /**
    * Retrieve one URL through the selected provider. Resolves the provider at
    * call time with the selection rules above; throws {@link WebError} when the
    * capability cannot run. A non-2xx response is a result, not a throw.
+   * The resolved selection appends a log-only `tool/provider-selected` record;
+   * the append is contained and never changes this result or exception.
    * @param request - the URL plus retrieval options.
    * @param signal - optional cancellation signal forwarded to the provider.
    * @returns the retrieval outcome; non-2xx responses resolve descriptively.
    */
   async fetch(request: WebFetchRequest, signal?: AbortSignal): Promise<WebFetchResult> {
-    return await this.selectFetchProvider().fetch(request, signal)
+    const { provider, selectionMode } = this.selectFetchProvider()
+    this.appendProviderSelected('web-fetch', provider.id, selectionMode)
+    return await provider.fetch(request, signal)
   }
 
   /**
@@ -186,16 +233,71 @@ export class WebRuntime extends Service {
    * @returns false only when the selected provider reports that it cannot authenticate.
    */
   async fetchReady(llmProvider?: string): Promise<boolean> {
-    return await selectedProviderReady(() => this.selectFetchProvider(), llmProvider)
+    return await selectedProviderReady(() => this.selectFetchProvider().provider, llmProvider)
   }
 
-  /** Select the fetch provider with the rules above, throwing the matching {@link WebError}. */
-  private selectFetchProvider(): WebFetchProvider {
+  /**
+   * Select the fetch provider with the rules above, throwing the matching {@link WebError}.
+   * @returns the selected provider plus how it won (configured id or sole usable registration).
+   */
+  private selectFetchProvider(): { provider: WebFetchProvider; selectionMode: WebSelectionMode } {
     const configuredId = this.config.fetchProvider.get() ?? this.fetchProviderEnv
-    return resolveProvider({
-      providers: this.fetchProviders,
-      ...configuredId !== undefined ? { configuredId } : {},
-    })
+    return {
+      provider: resolveProvider({
+        providers: this.fetchProviders,
+        ...configuredId !== undefined ? { configuredId } : {},
+      }),
+      selectionMode: configuredId !== undefined ? 'configured' : 'auto-single',
+    }
+  }
+
+  /**
+   * Append the log-only `tool/provider-selected` record after the selection it records. The append
+   * is contained: failure is warned and never changes the surrounding return value or exception.
+   * Nothing is written when no initiator agent owns a Session (agentless calls record nothing,
+   * and no identity is inferred from any other source).
+   * @param capability - the operation whose provider was resolved.
+   * @param providerId - the registry id of the selected provider.
+   * @param selectionMode - how the provider won selection.
+   */
+  private appendProviderSelected(capability: 'web-search' | 'web-fetch', providerId: string, selectionMode: WebSelectionMode): void {
+    try {
+      const agent = this.ctx.get('agents')?.currentInitiator()
+      if (agent === undefined) return
+      agent.session.append('tool/provider-selected', {
+        sessionId: agent.session.id,
+        capability,
+        providerId,
+        selectionMode,
+      })
+    } catch (error: unknown) {
+      this.ctx.logger.warn(`web: tool/provider-selected log event failed: ${error instanceof Error ? error.message : String(error)}`)
+    }
+  }
+
+  /**
+   * Append the log-only `web/search-route` record after the provider call it records. The append
+   * is contained: failure is warned and never changes the returned result or the propagated
+   * exception. Nothing is written when no initiator agent owns a Session.
+   * @param providerId - the registry id of the provider the search ran through.
+   * @param selectionMode - how the provider won selection.
+   * @param elapsedMs - the real elapsed milliseconds of the provider call.
+   * @param outcome - whether the provider call resolved or threw.
+   */
+  private appendSearchRoute(providerId: string, selectionMode: WebSelectionMode, elapsedMs: number, outcome: WebSearchRouteEventData['outcome']): void {
+    try {
+      const agent = this.ctx.get('agents')?.currentInitiator()
+      if (agent === undefined) return
+      agent.session.append('web/search-route', {
+        sessionId: agent.session.id,
+        providerId,
+        selectionMode,
+        elapsedMs,
+        outcome,
+      })
+    } catch (error: unknown) {
+      this.ctx.logger.warn(`web: web/search-route log event failed: ${error instanceof Error ? error.message : String(error)}`)
+    }
   }
 }
 

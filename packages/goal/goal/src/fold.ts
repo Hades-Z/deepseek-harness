@@ -126,6 +126,28 @@ function decodeRef(value: unknown): GoalRef {
 }
 
 /**
+ * Decode the optional block-time round record. Only a `block` change may carry
+ * it; its absence (including on a `block` from an older log) is tolerated.
+ */
+function decodeBlockedRounds(
+  value: Record<string, unknown>,
+  operation: Exclude<GoalOperation, 'clear'>,
+): GoalSnapshotChangeMeta['blockedRounds'] | undefined {
+  const raw = value['blockedRounds']
+  if (raw === undefined) return undefined
+  if (operation !== 'block') throw new Error('only a goal block change may carry blockedRounds')
+  if (!isRecord(raw) || Object.keys(raw).sort().join(',') !== 'admitted,threshold') {
+    throw new Error('goal change blockedRounds must have exactly admitted and threshold fields')
+  }
+  const admitted = nonNegativeInteger(raw['admitted'], 'blockedRounds.admitted')
+  const threshold = positiveInteger(raw['threshold'], 'blockedRounds.threshold')
+  if (admitted > threshold) {
+    throw new Error('goal change blockedRounds.admitted cannot exceed the threshold')
+  }
+  return { admitted, threshold }
+}
+
+/**
  * Decode a value that declares itself as a goal change. Unrelated values
  * return `undefined`; malformed goal changes fail replay loudly.
  * @param value - candidate source change.
@@ -153,21 +175,31 @@ export function decodeGoalChange(value: unknown): GoalChangeMeta | undefined {
     || !SNAPSHOT_OPERATIONS.has(value['operation'] as Exclude<GoalOperation, 'clear'>)) {
     throw new Error('goal change operation is invalid')
   }
+  const hasBlockedRounds = value['blockedRounds'] !== undefined
   const allowed = ['createdAt', 'goal', 'kind', 'operation', 'roundsStarted', 'updatedAt', 'version']
+  if (hasBlockedRounds) allowed.push('blockedRounds')
   if (Object.keys(value).sort().join(',') !== allowed.sort().join(',')) {
     throw new Error(`goal snapshot change must have exactly ${allowed.sort().join(',')} fields`)
   }
   const createdAt = nonNegativeInteger(value['createdAt'], 'createdAt')
   const updatedAt = nonNegativeInteger(value['updatedAt'], 'updatedAt')
   if (updatedAt < createdAt) throw new Error('goal change updatedAt cannot precede createdAt')
+  const goal = decodeSnapshot(value['goal'])
+  const roundsStarted = nonNegativeInteger(value['roundsStarted'], 'roundsStarted')
+  const blockedRounds = decodeBlockedRounds(value, value['operation'] as Exclude<GoalOperation, 'clear'>)
+  if (blockedRounds !== undefined
+    && (blockedRounds.admitted !== roundsStarted || blockedRounds.threshold !== goal.maxGoalRounds)) {
+    throw new Error('goal change blockedRounds must match roundsStarted and goal.maxGoalRounds')
+  }
   return {
     kind: 'goal/change',
     version: GOAL_CHANGE_VERSION,
     operation: value['operation'] as Exclude<GoalOperation, 'clear'>,
-    goal: decodeSnapshot(value['goal']),
-    roundsStarted: nonNegativeInteger(value['roundsStarted'], 'roundsStarted'),
+    goal,
+    roundsStarted,
     createdAt,
     updatedAt,
+    ...blockedRounds === undefined ? {} : { blockedRounds },
   } satisfies GoalSnapshotChangeMeta
 }
 

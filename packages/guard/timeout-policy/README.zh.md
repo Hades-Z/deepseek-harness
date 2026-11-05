@@ -72,11 +72,17 @@ kind: "package-reference"
 
 多个 `tools/execute` 监听器按 Cordis 注册顺序组合，注册顺序决定语义：超时注册在外层时覆盖整个重试操作，注册在内层时覆盖每次尝试。
 
+<a id="deadline-transition-records"></a>
+### 截止时间状态转换记录
+
+每次状态转换——arm、fire、restore——之后，包装层都会向该调用的 Session 追加一条非 surface 的 `tool/execute-deadline` 记录，使轨迹消费者能够观察到任何公开事件都不暴露的计时器归属与信号交换。记录携带 `callId`、`name`、`sessionId`、`state`（`armed` | `fired` | `restored`）与 `timeoutMs`（`fired` 时为已用预算，其余状态为声明的预算）。每次追加都发生在其记录的业务提交之后——`armed` 在信号交换后、`fired` 在构建 `TOOL_TIMEOUT` 结果后、`restored` 在信号恢复后——并且被隔离：追加失败只记录警告，绝不改变返回结果或传播的异常。没有 agent 的分发没有可记录的 Session，因此不写任何内容。该记录不携带 `turn`／`step`，因为 `tools/execute` 载荷没有步骤身份；轨迹消费者从自己的 call-id → turn/step 关联中拼接它们。
+
 ### 源码地图
 
 | 文件 | 职责 |
 |---|---|
 | [`src/index.ts`](src/index.ts) | 插件入口：`TOOL_TIMEOUT`、`name`／`inject`／`apply`、`tools/execute` 包装层 |
+| [`src/types.ts`](src/types.ts) | `tool/execute-deadline` 记录载荷及其 `SessionEventMap` 声明合并 |
 
 </details>
 

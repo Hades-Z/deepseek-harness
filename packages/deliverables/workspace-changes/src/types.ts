@@ -1,5 +1,6 @@
 /** Per-turn workspace change summaries, the Session event announcing them, and the Host service serving them with their comparisons. */
 import type { SessionId } from '@deepseek-ai/dsh-session/types'
+import type { ToolCallId } from '@deepseek-ai/dsh-llm'
 
 /** One file changed during a turn, with line counts from git or from the whole-file captures around its file-tool edits. */
 export interface WorkspaceChangedFile {
@@ -104,6 +105,22 @@ declare module '@deepseek-ai/dsh-session/types' {
      * lives. The latest event for one turn replaces earlier ones.
      */
     'workspace/changes': { turn: number }
+    /**
+     * One built-in pre-execute listener's own decision, recorded after that
+     * listener decided and before the pipeline aggregates the chain. Log-only:
+     * external listeners do not write it, and the aggregate gate cannot show
+     * individual votes.
+     * @param data - the deciding listener, the call, and its own decision.
+     */
+    'tool/pre-execute-decision': {
+      listenerId: string
+      callId: ToolCallId
+      toolName: string
+      decision: 'allow' | 'deny' | 'ask' | 'handled'
+      reason?: string
+      turn?: number
+      step?: number
+    }
   }
 }
 

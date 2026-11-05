@@ -36,11 +36,56 @@ import { joinContextSections, renderContextSections, renderPrompt } from '@deeps
 import type { PromptAssembly } from '@deepseek-ai/dsh-system-prompt'
 import { ToolActivationError, ToolBatchExecutionError } from '@deepseek-ai/dsh-tools'
 import type { ResolvedToolSet } from '@deepseek-ai/dsh-tools'
-import type { Context } from '@deepseek-ai/cordis'
+import { createHash } from 'node:crypto'
+import type { Context, LoggerService } from '@deepseek-ai/cordis'
 import { ReactLoopInbox } from './inbox.ts'
 import { RuntimeContextProjection } from './runtime-context.ts'
 import { AssistantStreamAttempt } from './assistant-stream.ts'
 import { SystemPromptProjection } from './runtime-context.ts'
+import type { TurnPreStepEventData, TurnStoppingEventData } from './types.ts'
+
+/** The log-only `SessionEventMap` keys this driver owns. */
+type LoopLogEventKey = 'turn/pre-step' | 'turn/stopping'
+
+/**
+ * Append one log-only trajectory event under failure containment: the event
+ * records an already-settled business fact, so a logging failure must never
+ * change the surrounding return value or exception. The payload is built
+ * inside the guard so a builder fault is contained too.
+ * @param logger - the service logger; warns on a failed append.
+ * @param session - the driven agent's session; the append target.
+ * @param type - one of the log-only `turn/*` keys declared in `./types.ts`.
+ * @param build - constructs the payload only when an append will be attempted.
+ */
+function appendLoopLogEvent(
+  logger: LoggerService,
+  session: Session,
+  type: 'turn/pre-step',
+  build: () => TurnPreStepEventData,
+): void
+function appendLoopLogEvent(
+  logger: LoggerService,
+  session: Session,
+  type: 'turn/stopping',
+  build: () => TurnStoppingEventData,
+): void
+function appendLoopLogEvent(
+  logger: LoggerService,
+  session: Session,
+  type: LoopLogEventKey,
+  build: () => TurnPreStepEventData | TurnStoppingEventData,
+): void {
+  try {
+    session.append(type, build())
+  } catch (error: unknown) {
+    logger.warn(`agent-loop: ${type} log event failed: ${error instanceof Error ? error.message : String(error)}`)
+  }
+}
+
+/** The dropped-message ids of one pre-step claim, when the claim was non-empty. */
+function claimedMessageIds(claimed: readonly UserMessage[]): TurnPreStepEventData['rejectedUserMessageIds'] {
+  return claimed.length === 0 ? undefined : claimed.map(message => message.id)
+}
 
 /** Projected facts consumed by this driver; registration stays with the factory. */
 interface LoopProjections {
@@ -307,11 +352,35 @@ export class ReactLoopAgent implements Agent {
       signal.throwIfAborted()
       if (decision.kind === 'reject') {
         toolSet.dispose()
+        const rejectedUserMessageIds = claimedMessageIds(claimed)
+        appendLoopLogEvent(this.ctx.logger, this.session, 'turn/pre-step', () => ({
+          turn: position.turn,
+          step: position.step,
+          disposition: 'rejected-by-pre-step',
+          ...decision.observation === undefined ? {} : { rejectReason: decision.observation.reason },
+          ...rejectedUserMessageIds === undefined ? {} : { rejectedUserMessageIds },
+        }))
         return decision
       }
+      appendLoopLogEvent(this.ctx.logger, this.session, 'turn/pre-step', () => ({
+        turn: position.turn,
+        step: position.step,
+        disposition: 'entered',
+      }))
       return { ...decision, assembly, selection, toolSet }
     } catch (error: unknown) {
       toolSet.dispose()
+      // A settled fact is recorded only when the cancellation — not a business
+      // failure — ended the admission attempt.
+      if (signal.aborted) {
+        const rejectedUserMessageIds = claimedMessageIds(claimed)
+        appendLoopLogEvent(this.ctx.logger, this.session, 'turn/pre-step', () => ({
+          turn: position.turn,
+          step: position.step,
+          disposition: 'cancelled-before-admission',
+          ...rejectedUserMessageIds === undefined ? {} : { rejectedUserMessageIds },
+        }))
+      }
       throw error
     }
   }
@@ -396,6 +465,19 @@ export class ReactLoopAgent implements Agent {
           await this.dispatch.serial('agent/turn-stopping', { turn, signal })
           signal.throwIfAborted()
         }
+        if (turnEnds) {
+          // Settled summary: the listeners above own their own vote records;
+          // the loop owns whether the turn actually stops here or steering
+          // queued during the boundary carries it into another step.
+          const steering = this.inbox.nextStep
+          appendLoopLogEvent(this.ctx.logger, this.session, 'turn/stopping', () => ({
+            turn,
+            step: phase.step,
+            source: 'agent-loop',
+            outcome: steering.length === 0 ? 'stop' : 'continue',
+            ...(steering.length === 0 ? {} : { steeringMessageIds: steering.map(message => message.id) }),
+          }))
+        }
         if (turnEnds && this.inbox.nextStep.length === 0) break
         target = 'next-step'
       }
@@ -440,6 +522,9 @@ export class ReactLoopAgent implements Agent {
 
     const { assembly } = decision
     const renderedPrompt = renderPrompt(assembly)
+    // The step's rendered prompt is built once outside the retry series; the
+    // digest is computed lazily so only a failed request pays for it.
+    let assemblyDigest: string | undefined
     let firstAttempt = true
     while (true) {
       const { config, preparedCall } = await this.prepareRequest(turn, step, decision.selection, signal)
@@ -545,6 +630,9 @@ export class ReactLoopAgent implements Agent {
             'assistant/attempt',
             () => this.session.append('assistant/attempt', { turn, step, stream: live.stream }).seq,
           )
+          // The rendered prompt is built once per step and reused verbatim
+          // across retries, so its digest identifies the reused assembly.
+          assemblyDigest ??= createHash('sha256').update(renderedPrompt).digest('hex')
           const action = await this.dispatch.waterfall(
             'agent/request-error', {
               turn,
@@ -552,6 +640,8 @@ export class ReactLoopAgent implements Agent {
               provider: request.provider,
               failure: finish.failure,
               retryPolicy: preparedCall?.retryPolicy,
+              assemblyDigest,
+              compactionGeneration: this.session.surface.contentGeneration,
               signal,
             },
             () => Promise.resolve<RequestErrorAction>(undefined),

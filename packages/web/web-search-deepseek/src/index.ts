@@ -13,6 +13,7 @@ import type { Context } from '@deepseek-ai/cordis'
 import z from '@deepseek-ai/schemastery'
 import type {} from '@deepseek-ai/dsh-agent'
 import { credentialRef } from '@deepseek-ai/dsh-credentials'
+import type { SearchProtocolSetting } from './protocol.ts'
 import type { CredentialRef } from '@deepseek-ai/dsh-credentials'
 import type {} from '@deepseek-ai/dsh-deepseek-account'
 import { launchEnvironmentOf } from '@deepseek-ai/dsh-launch-environment'
@@ -63,6 +64,11 @@ export interface Config {
   maxTokens: Volatile<number>
   /** Maximum `web_search` server-tool uses per request. Defaults to 5. */
   maxUses: Volatile<number>
+  /**
+   * Wire dialect: `anthropic`, `openai-responses`, or `auto` to probe once and
+   * remember. Omitted means `auto`.
+   */
+  protocol: Volatile<SearchProtocolSetting>
 }
 
 export const Config = z.object({
@@ -76,6 +82,7 @@ export const Config = z.object({
   apiVersion: z.string().default(DEEPSEEK_DEFAULT_API_VERSION).volatile(),
   maxTokens: z.number().step(1).min(1).default(DEEPSEEK_DEFAULT_MAX_TOKENS).volatile(),
   maxUses: z.number().step(1).min(1).default(DEEPSEEK_DEFAULT_MAX_USES).volatile(),
+  protocol: z.union(['auto', 'anthropic', 'openai-responses']).default('auto').volatile(),
 })
 
 /**
@@ -132,6 +139,7 @@ function resolveOptions(
     apiVersion: config.apiVersion,
     maxTokens: config.maxTokens,
     maxUses: config.maxUses,
+    protocol: config.protocol,
     recordRequest: (request) => {
       ctx.get('agents')?.currentInitiator()?.session.append(
         'web/deepseek-search-llm-request',
@@ -180,6 +188,7 @@ export function apply(ctx: Context, config: Config): void {
   const options = () => resolveOptions(ctx, {
     apiKey: config.apiKey.get(), apiKeyEnv: config.apiKeyEnv.get(), baseURL: config.baseURL.get(), model: config.model.get(),
     apiVersion: config.apiVersion.get(), maxTokens: config.maxTokens.get(), maxUses: config.maxUses.get(),
+    protocol: config.protocol.get(),
   })
   const provider = new DeepSeekSearchProvider(options)
   ctx.web.registerSearchProvider({

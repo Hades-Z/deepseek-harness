@@ -89,6 +89,8 @@ The system-prompt contribution `approval:policy` states the complete current mea
 
 `request()` appends `approval/asked` with the request identity and tool, then `approval/decided` with the closed outcome; the exact appended fields live in [`src/index.ts`](src/index.ts). Both are log-only.
 
+`approval/decided` also carries the answering listener's self-reported stable id when one claimed the request: before returning its outcome, the listener sets the request's one writable field `responder` to a stable id, and the service copies it onto the event. A fail-closed `unavailable`, the deterministic `never` rejection, and a pre-aborted `cancelled` never dispatch, so their records carry no responder; a listener that answers without self-reporting also stays unknown. The service never infers identity. Built-in answerers self-report explicit stable ids; the SDK bridge reports `sdk-host` only where it is the actual responder.
+
 </details>
 
 -----

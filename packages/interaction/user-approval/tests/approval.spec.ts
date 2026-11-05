@@ -87,6 +87,71 @@ describe('ApprovalService.request', () => {
     expect(Object.keys(appended[0]?.data ?? {}).sort()).toEqual(['id', 'toolName'])
   })
 
+  it('records the responder the answering listener self-reports on the decided audit event', async () => {
+    const ctx = await mounted()
+    const { agent, appended } = fakeAgent(ctx)
+    ctx.on('approval/request', (req) => {
+      req.responder = 'test-suite'
+      return Promise.resolve<ApprovalOutcome>('allowed-once')
+    })
+
+    await expect(ctx.approval.request(requestOf(agent))).resolves.toBe('allowed-once')
+
+    expect(appended[1]?.data).toMatchObject({ outcome: 'allowed-once', responder: 'test-suite' })
+  })
+
+  it('keeps the responder absent when no answerer claims the ask (fail closed)', async () => {
+    const ctx = await mounted()
+    const { agent, appended } = fakeAgent(ctx)
+
+    await ctx.approval.request(requestOf(agent))
+
+    expect(Object.keys(appended[1]?.data ?? {}).sort()).toEqual(['id', 'outcome'])
+  })
+
+  it('keeps the responder absent when the claiming answerer does not self-report', async () => {
+    const ctx = await mounted()
+    const { agent, appended } = fakeAgent(ctx)
+    ctx.on('approval/request', (_req, next) => next())
+    ctx.on('approval/request', () => Promise.resolve<ApprovalOutcome>('allowed-once'))
+
+    await expect(ctx.approval.request(requestOf(agent))).resolves.toBe('allowed-once')
+
+    expect(Object.keys(appended[1]?.data ?? {}).sort()).toEqual(['id', 'outcome'])
+  })
+
+  it('keeps the responder absent under the never policy, where no listener is consulted', async () => {
+    const ctx = await context()
+    await ctx.plugin(ApprovalService, { policy: 'never' })
+    const { agent, appended } = fakeAgent(ctx)
+    ctx.on('approval/request', (req) => {
+      req.responder = 'ghost'
+      return Promise.resolve<ApprovalOutcome>('allowed-once')
+    })
+
+    await expect(ctx.approval.request(requestOf(agent))).resolves.toBe('rejected')
+
+    expect(appended[1]?.data).toMatchObject({ outcome: 'rejected' })
+    expect(appended[1]?.data['responder']).toBeUndefined()
+  })
+
+  it('keeps the responder absent when the request was pre-aborted', async () => {
+    const ctx = await mounted()
+    const { agent, appended } = fakeAgent(ctx)
+    const consulted = vi.fn()
+    ctx.on('approval/request', (req) => {
+      consulted()
+      req.responder = 'ghost'
+      return Promise.resolve<ApprovalOutcome>('allowed-once')
+    })
+
+    await expect(ctx.approval.request(requestOf(agent, { signal: AbortSignal.abort() }))).resolves.toBe('cancelled')
+
+    expect(consulted).not.toHaveBeenCalled()
+    expect(appended[1]?.data).toMatchObject({ outcome: 'cancelled' })
+    expect(appended[1]?.data['responder']).toBeUndefined()
+  })
+
   it('borrows the exact readonly request for scoped dispatch and audit', async () => {
     const ctx = await mounted()
     const { agent, appended } = fakeAgent(ctx)

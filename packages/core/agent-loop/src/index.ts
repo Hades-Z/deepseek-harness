@@ -33,9 +33,12 @@ import type { ProjectionHandle } from '@deepseek-ai/dsh-session-projection'
 import { SessionPersistenceNotFoundError } from '@deepseek-ai/dsh-session-persistence'
 import type { SessionHandle, SessionPersistence } from '@deepseek-ai/dsh-session-persistence'
 import { ReactLoopAgent } from './agent.ts'
+import './types.ts'
 import { inboxProjectionDefinition } from './inbox.ts'
 import { DEFAULT_MAX_PARALLEL_TOOL_CALLS } from './constants.ts'
 import type {} from './runtime-context.ts'
+
+export type { TurnStoppingEventData } from './types.ts'
 
 /** Fiber states that cannot own or serve a new lifecycle. */
 const INACTIVE_STATES: ReadonlySet<FiberState> = new Set([

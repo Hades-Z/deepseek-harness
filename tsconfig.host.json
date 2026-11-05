@@ -505,6 +505,7 @@
     { "path": "./packages/spill/spill-local" },
     { "path": "./packages/spill/spill-policy" },
     { "path": "./packages/guard/timeout-policy" },
+    { "path": "./packages/guard/retry-policy" },
     { "path": "./packages/test-support/agent-loop-testkit" },
     { "path": "./packages/test-support/tool-testkit" },
     { "path": "./packages/acp/acp" },

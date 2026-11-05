@@ -100,6 +100,20 @@ interface ToolDefinition extends ToolSchema {
    * for the same replay reason.
    */
   presentResult?(args: unknown, result: ToolResult): ToolResultView | undefined
+  /**
+   * Plugin id owning this definition, for trajectory attribution. Declared by
+   * tool packages that want their settled batches attributed to a stable owner
+   * in `tool/result-attribution`; omitted leaves the record `partial`. Never
+   * model-visible: `schemas()` whitelists only name/description/parameters.
+   */
+  readonly pluginOwner?: string
+  /**
+   * Provider id the owning executor dispatches through, for trajectory
+   * attribution. Declared by executors that route calls through a named provider
+   * (e.g. a sandbox or remote runtime); omitted leaves the record `partial`.
+   * Never model-visible.
+   */
+  readonly providerId?: string
 }
 ```
 
@@ -284,6 +298,13 @@ interface ToolBatchResult {
 ```ts type-equiv
 /** A plugin owns argument parsing, dispatch, scheduling, cancellation, and logging. */
 interface ToolExecutor {
+  /**
+   * Stable executor identity recorded in `tool/result-attribution`. Declared by
+   * executor packages that want their batches attributed by name; omitted
+   * leaves the record partial. Constructor names are not used: they are
+   * unstable across builds and do not identify the deployment's selection.
+   */
+  readonly executorId?: string
   /** Guidance registered and disposed with this executor; absent means no executor-owned sections. */
   readonly sections?: readonly ToolPromptSection[]
   /**
@@ -339,6 +360,12 @@ interface ToolExecutionInput {
   readonly agent?: Agent
   /** Step admission shared by Native and PTC dispatch. Conditional tools require it. */
   readonly toolSet?: ResolvedToolSet
+  /**
+   * Committed model step for log-only pipeline records (`tool/result-rewrite`,
+   * `tool/pipeline-error`). The executor propagates it from `ToolBatchInput.log`;
+   * undefined for nested dispatches outside a model step.
+   */
+  readonly log?: { readonly turn: number; readonly step: number }
   /**
    * Opaque token of the enclosing transport execution, when one exists. PTC
    * mode sets this on SDK sub-dispatches so commit-style observers can wait for

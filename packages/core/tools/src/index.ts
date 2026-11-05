@@ -1,19 +1,29 @@
 /** Tool definitions and scoped dispatch to plugin-owned executors. @module */
+import { createHash } from 'node:crypto'
 import { Context, Service } from '@deepseek-ai/cordis'
 import z from '@deepseek-ai/schemastery'
 import { AnonymousEntries, NamedEntries, ScopedLayers, scopeOf, scopeChainOf } from '@deepseek-ai/dsh-scope'
 import type { ScopeKey, ScopeLayer } from '@deepseek-ai/dsh-scope'
 import { ToolExecutorUnavailableError } from './executor.ts'
-import type { ToolExecutor, ToolBatchInput, ToolBatchResult } from './executor.ts'
+import type { ToolExecutor, ToolBatchInput, ToolBatchResult, ToolModelInput } from './executor.ts'
 import './events.ts'
+// Side-effect import: brings the `tool/catalog-resolved` | `tool/catalog-exposed` |
+// `tool/result-attribution` | `tool/execution-plan` | `tool/result-rewrite` |
+// `tool/pipeline-error` declaration merges into `SessionEventMap` so
+// `agent.session.append(...)` type-checks and the persistence catalog
+// auto-registers them.
+import './types.ts'
 import type { ToolSchema } from '@deepseek-ai/dsh-llm'
 import { projectToolSchema } from './schema.ts'
 import { assertSupportedJsonSchema } from './json-schema.ts'
 import { RUN_CODE_NAME, ToolActivationError } from './contracts.ts'
+import type { Agent } from '@deepseek-ai/dsh-agent'
 import type {
   ToolDefinition, ToolRestriction, ToolExecution, ToolGuard,
   ResolvedToolSet, ToolActivationContext, ToolRegistrationOptions,
 } from './contracts.ts'
+import { appendToolLogEvent } from './log-events.ts'
+import type { ToolCatalogSkipReason } from './types.ts'
 
 declare module '@deepseek-ai/dsh-system-prompt' {
   interface AssembleContext {
@@ -95,6 +105,15 @@ class GuardLayer {
   isEmpty(): boolean { return this.guards.isEmpty() }
 }
 
+/**
+ * Digest a recorded catalog name list so a replay can match one catalog row.
+ * @param names - tool or schema names in recorded order.
+ * @returns the SHA-256 hex digest of the JSON-encoded list.
+ */
+function catalogDigest(names: readonly string[]): string {
+  return createHash('sha256').update(JSON.stringify(names)).digest('hex')
+}
+
 /** Concrete tool registry and scoped executor dispatcher. */
 export class ToolsService extends Service {
   static inject = ['systemPrompt']
@@ -110,10 +129,12 @@ export class ToolsService extends Service {
 
   constructor(ctx: Context) {
     super(ctx, 'tools')
-    ctx.systemPrompt.tools(({ scope, toolSet }) => {
-      const executor = this.selectExecutor(scope)
-      const description = executor.describe(this.definitions(scope, toolSet))
-      return { ...description, knownNames: description.knownNames ?? [...this.view(scope).knownNames] }
+    ctx.systemPrompt.tools(context => {
+      const executor = this.selectExecutor(context.scope)
+      const admitted = this.definitions(context.scope, context.toolSet)
+      const description = executor.describe(admitted)
+      this.recordCatalogExposed(context.agent, admitted, description)
+      return { ...description, knownNames: description.knownNames ?? [...this.view(context.scope).knownNames] }
     })
   }
 
@@ -138,6 +159,16 @@ export class ToolsService extends Service {
     if (timeoutMs !== undefined
       && (!Number.isFinite(timeoutMs) || timeoutMs <= 0)) {
       throw new TypeError(`tool "${name}" timeoutMs must be a positive finite number`)
+    }
+    const retry = definition.retry
+    if (retry !== undefined) {
+      if (!Number.isInteger(retry.maxAttempts) || retry.maxAttempts < 1) {
+        throw new TypeError(`tool "${name}" retry.maxAttempts must be a positive integer`)
+      }
+      if (retry.backoffMs !== undefined
+        && (!Number.isFinite(retry.backoffMs) || retry.backoffMs < 0)) {
+        throw new TypeError(`tool "${name}" retry.backoffMs must be a non-negative finite number`)
+      }
     }
     // Reserved unconditionally: any agent may select a code mode for itself,
     // so a name free to take under the deployment default would become a
@@ -266,18 +297,31 @@ export class ToolsService extends Service {
     signal.throwIfAborted()
     const view = this.view(agent)
     const admitted = new Map<string, ToolDefinition>()
+    // Skipped registrations, by excluding stage. Restrictions are resolved inside
+    // `view()` before this loop, so the inherited globals masked out of `visible`
+    // appear in `knownNames` but not `visible`; `when`/`when-error` are decided here.
+    const skipped: ToolCatalogSkipReason[] = []
+    for (const name of view.knownNames) {
+      if (!view.visible.has(name)) skipped.push({ name, reason: 'restriction' })
+    }
     for (const [name, definition] of view.visible) {
       const registration = view.registrations.get(name)
       let enabled: boolean
       try {
         enabled = registration?.when === undefined || await registration.when(context)
       } catch (cause: unknown) {
+        // Record the `when-error` exclusion for diagnosis, then re-throw the step-aborting
+        // activation error verbatim — the write only warns and never changes the exception.
+        skipped.push({ name, reason: 'when-error' })
+        this.recordCatalogResolved(agent, admitted, skipped)
         signal.throwIfAborted()
         throw new ToolActivationError(name, cause)
       }
       signal.throwIfAborted()
       if (enabled) admitted.set(name, definition)
+      else skipped.push({ name, reason: 'when' })
     }
+    this.recordCatalogResolved(agent, admitted, skipped)
     let closed = false
     return Object.freeze({
       dispose: () => { closed = true },
@@ -293,6 +337,57 @@ export class ToolsService extends Service {
         }
         return visible
       },
+    })
+  }
+
+  /**
+   * Record the resolved catalog without affecting admission or activation failures.
+   * @param agent - agent whose Session owns the record.
+   * @param admitted - admitted definitions in registration order.
+   * @param skipped - exclusions collected during this resolution pass.
+   */
+  private recordCatalogResolved(
+    agent: Agent,
+    admitted: ReadonlyMap<string, ToolDefinition>,
+    skipped: readonly ToolCatalogSkipReason[],
+  ): void {
+    appendToolLogEvent(this.ctx.logger, agent.session, 'tool/catalog-resolved', () => {
+      const names = [...admitted.keys()]
+      return {
+        sessionId: agent.session.id,
+        admitted: names,
+        skipped,
+        digest: catalogDigest(names),
+      }
+    })
+  }
+
+  /**
+   * Record the schemas the selected executor exposed for one assembly without
+   * affecting assembly.
+   * @param agent - agent whose Session owns the record; absent for diagnostic assemblies.
+   * @param admitted - definitions the registry admitted for this step.
+   * @param description - the executor's model input, i.e. the schemas it will expose.
+   */
+  private recordCatalogExposed(
+    agent: Agent | undefined,
+    admitted: readonly ToolDefinition[],
+    description: ToolModelInput,
+  ): void {
+    if (agent === undefined) return
+    appendToolLogEvent(this.ctx.logger, agent.session, 'tool/catalog-exposed', () => {
+      const exposed = description.schemas.map(schema => schema.name)
+      const schemaDigests: Record<string, string> = {}
+      for (const schema of description.schemas) {
+        schemaDigests[schema.name] = catalogDigest([JSON.stringify(schema)])
+      }
+      return {
+        sessionId: agent.session.id,
+        admitted: admitted.map(definition => definition.name),
+        exposed,
+        digest: catalogDigest(exposed),
+        schemaDigests,
+      }
     })
   }
 
@@ -373,7 +468,39 @@ export class ToolsService extends Service {
    * @returns the selected executor's settled batch; unavailable selections reject.
    */
   async execute(input: ToolBatchInput): Promise<ToolBatchResult> {
-    return this.selectExecutor(input.agent).execute(input)
+    const executor = this.selectExecutor(input.agent)
+    try {
+      return await executor.execute(input)
+    } finally {
+      // Record after settlement (including a drained failure) without changing
+      // the result or the exception that leaves the batch.
+      this.recordResultAttribution(executor, input)
+    }
+  }
+
+  /**
+   * Record the settled batch's executor identity and per-call ownership without
+   * affecting the batch outcome.
+   * @param executor - the executor the batch was dispatched to.
+   * @param input - the batch input the executor settled.
+   */
+  private recordResultAttribution(executor: ToolExecutor, input: ToolBatchInput): void {
+    const agent = input.agent
+    if (agent === undefined) return
+    appendToolLogEvent(this.ctx.logger, agent.session, 'tool/result-attribution', () => ({
+      sessionId: agent.session.id,
+      turn: input.log?.turn ?? null,
+      step: input.log?.step ?? null,
+      executorId: executor.executorId ?? null,
+      calls: input.calls.map(block => {
+        const definition = this.get(block.name, agent, input.toolSet)
+        return {
+          callId: block.id,
+          pluginOwner: definition?.pluginOwner ?? null,
+          providerId: definition?.providerId ?? null,
+        }
+      }),
+    }))
   }
 
   /**
@@ -409,4 +536,10 @@ export * from './executor.ts'
 export * from './schema.ts'
 export * from './json-schema.ts'
 export * from './presentation.ts'
+export type {
+  ToolCatalogResolvedEventData, ToolCatalogSkipReason,
+  ToolResultAttributionEventData, ToolExecutionPlanReclass, ToolExecutionPlanEventData,
+  ToolResultRewriteStage, ToolResultRewriteEventData,
+  ToolPipelineErrorEventData,
+} from './types.ts'
 export { ToolsService as ToolRuntime }

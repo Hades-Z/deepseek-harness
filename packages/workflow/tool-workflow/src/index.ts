@@ -331,6 +331,8 @@ export function apply(ctx: Context, config: Config): void {
   ctx.tools.register(defineTool({
     name: toolName,
     description: DESCRIPTION,
+    // Trajectory provenance: names this package as the settled call's owner.
+    pluginOwner: '@deepseek-ai/dsh-tool-workflow',
     parameters: {
       script: {
         type: 'string',

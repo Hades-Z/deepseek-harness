@@ -112,6 +112,8 @@ export function registerListSubagentModels(
       'Inspect subagent models without changing the current Agent. No arguments: providers; '
       + '`provider`: allowed models; `provider` + `model`: that model and its reasoning efforts. '
       + 'Inspect options here before selecting a child provider and model; use returned ids for delegation.',
+    // Trajectory provenance: names this package as the settled call's owner.
+    pluginOwner: '@deepseek-ai/dsh-tool-subagent',
     parameters: {
       provider: {
         type: 'string',

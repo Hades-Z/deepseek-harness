@@ -89,6 +89,8 @@ kind: "package-reference"
 
 `request()` 先追加携带请求身份与工具的 `approval/asked`，再追加携带最终结果的 `approval/decided`；确切追加字段见 [`src/index.ts`](src/index.ts)。两者都只写入日志。
 
+当有监听器认领请求时，`approval/decided` 还会携带该应答者自报的稳定标识：监听器在返回结果前，把请求上唯一可写的字段 `responder` 设为自己的稳定标识，服务随即将其复制到该事件上。以拒绝方式关闭的 `unavailable`、`never` 的确定性拒绝以及提前中止的 `cancelled` 从不分发，因此这些记录没有应答者；监听器作答而未自报时也保持未知。服务从不推断身份。内置应答者自报显式的稳定标识；SDK bridge 仅在自身确为实际应答者时报告 `sdk-host`。
+
 </details>
 
 -----

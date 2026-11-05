@@ -2021,7 +2021,7 @@ export const SERVICE_API: readonly ServiceApiEntry[] = [
       },
       {
         signature: 'query(request: LspQueryRequest, signal?: AbortSignal): Promise<LspQueryResult>',
-        description: 'Select a provider by the file\'s extension and run one query. Selection is per-query and order-independent; no match throws `LspError` `LSP_UNAVAILABLE`.',
+        description: 'Select a provider by the file\'s extension and run one query. Selection is per-query and order-independent; no match throws `LspError` `LSP_UNAVAILABLE`. A resolved route appends a log-only `tool/provider-selected` session record; the append is contained and never changes this result.',
         parameters: [{ name: 'request', description: 'the normalized query.' }, { name: 'signal', description: 'optional cancellation forwarded to the selected provider.' }],
         returns: 'the normalized, closed-union result.',
       },
@@ -3357,7 +3357,7 @@ export const SERVICE_API: readonly ServiceApiEntry[] = [
         signature: 'async get(name: string, options: SkillViewOptions = {}): Promise<SkillDefinition | undefined>',
         description: 'Load and validate the winning candidate, passing its opaque discovery locator back to the provider. Cancellation is rechecked after selection, including cache hits, and raced against loading so an uncooperative provider cannot hang the caller.',
         parameters: [{ name: 'name', description: 'kebab-case skill name.' }, { name: 'options', description: 'view options; `scope` selects the viewing agent\'s layers, `cwd` selects workspace-sensitive skills, and `signal` cancels work.' }],
-        returns: 'the full skill, including body content, or `undefined`.',
+        returns: 'the full skill, including body content, or `undefined`. A validated load appends a log-only `skill/loaded` session record (name, source, provider, real load time, collect-cache state) to the current initiator agent\'s session; the append is contained and never changes this return value.',
       },
     ],
   },
@@ -4183,7 +4183,7 @@ export const SERVICE_API: readonly ServiceApiEntry[] = [
       },
       {
         signature: 'async ask(request: AskUserQuestionRequest): Promise<AskUserQuestionAnswer>',
-        description: 'Ask the scoped answerer waterfall and wait for the user\'s answer.\n\nWhen a caller supplies an agent, human interaction is valid only for the exact live runtime root. Runtime ownership, not durable session lineage, decides this boundary: an owned child has no human answerer and would block forever, while a lineage-bearing session resumed as a new runtime root may ask normally.',
+        description: 'Ask the scoped answerer waterfall and wait for the user\'s answer.\n\nWhen a caller supplies an agent, human interaction is valid only for the exact live runtime root. Runtime ownership, not durable session lineage, decides this boundary: an owned child has no human answerer and would block forever, while a lineage-bearing session resumed as a new runtime root may ask normally.\n\nAfter the answer settles, the service appends a log-only `user-question/answered` audit record to the agent\'s Session (warn-only on failure, never without an agent); a rejected, aborted, or timed-out ask records nothing.',
         parameters: [{ name: 'request', description: 'Questions, owner agent, and abort signal.' }],
         returns: 'The answer chosen or typed by the human.',
         throws: ['{UserQuestionError} code `ASK_ABORTED` when the supplied signal is already or becomes aborted, `CALLER_NOT_LIVE` when a supplied agent is not the registry\'s exact live instance, or `DELEGATED_CALLER` when that live agent is owned by another agent.'],
@@ -4209,7 +4209,7 @@ export const SERVICE_API: readonly ServiceApiEntry[] = [
       },
       {
         signature: 'async search(request: WebSearchRequest, signal?: AbortSignal): Promise<WebSearchResult>',
-        description: 'Run one search through the selected provider. Resolves the provider at call time with the selection rules above; throws WebError when the capability cannot run. The seam enforces `request.maxResults` on the result: if the provider over-returns, `sources[]` is truncated and `truncated` set.',
+        description: 'Run one search through the selected provider. Resolves the provider at call time with the selection rules above; throws WebError when the capability cannot run. The seam enforces `request.maxResults` on the result: if the provider over-returns, `sources[]` is truncated and `truncated` set. The resolved selection appends a log-only `tool/provider-selected` record, and the settled provider call a log-only `web/search-route` record (real elapsed time and outcome); both appends are contained and never change this result or exception.',
         parameters: [{ name: 'request', description: 'the query and optional result limit.' }, { name: 'signal', description: 'optional cancellation signal forwarded to the provider.' }],
         returns: 'the provider\'s results, capped to `request.maxResults`.',
       },
@@ -4221,7 +4221,7 @@ export const SERVICE_API: readonly ServiceApiEntry[] = [
       },
       {
         signature: 'async fetch(request: WebFetchRequest, signal?: AbortSignal): Promise<WebFetchResult>',
-        description: 'Retrieve one URL through the selected provider. Resolves the provider at call time with the selection rules above; throws WebError when the capability cannot run. A non-2xx response is a result, not a throw.',
+        description: 'Retrieve one URL through the selected provider. Resolves the provider at call time with the selection rules above; throws WebError when the capability cannot run. A non-2xx response is a result, not a throw. The resolved selection appends a log-only `tool/provider-selected` record; the append is contained and never changes this result or exception.',
         parameters: [{ name: 'request', description: 'the URL plus retrieval options.' }, { name: 'signal', description: 'optional cancellation signal forwarded to the provider.' }],
         returns: 'the retrieval outcome; non-2xx responses resolve descriptively.',
       },
@@ -4682,7 +4682,7 @@ export const EVENT_API: readonly EventApiEntry[] = [
   {
     name: 'agent/request-error',
     mode: 'waterfall',
-    signature: '\'agent/request-error\'(this: Scoped<Agent>, payload: { agent: Agent; turn: number; step: number; provider: string; failure: LlmFailure; retryPolicy: ResolvedRetryPolicy | undefined; signal: AbortSignal }, next: () => Promise<RequestErrorAction>): Promise<RequestErrorAction>',
+    signature: '\'agent/request-error\'(this: Scoped<Agent>, payload: { agent: Agent; turn: number; step: number; provider: string; failure: LlmFailure; retryPolicy: ResolvedRetryPolicy | undefined; assemblyDigest?: string; compactionGeneration?: number; signal: AbortSignal }, next: () => Promise<RequestErrorAction>): Promise<RequestErrorAction>',
     summary: 'Handle one failed model-request attempt before the loop retries or closes its step.',
     description: 'Handle one failed model-request attempt before the loop retries or closes its step. A listener returns `{ kind: \'retry\' }` without calling `next()` when it owns recovery, or calls `next()` to delegate. The default `undefined` leaves the failure terminal.',
     parameters: [{ name: 'payload', description: '.signal - the turn abort signal. Scope-filtered dispatch (`@deepseek-ai/dsh-scope`): agent-scoped listeners receive only that agent.' }],
@@ -5477,7 +5477,7 @@ export const TYPE_API: readonly TypeApiEntry[] = [
   },
   {
     name: 'ApprovalRequestEvent',
-    declaration: 'export interface ApprovalRequestEvent {\n    readonly agent: Agent;\n    readonly toolName: string;\n    readonly callId?: ToolCallId;\n    readonly reason?: string;\n    readonly displayReason?: {\n        readonly en: string;\n        readonly [locale: string]: string;\n    };\n    readonly signal?: AbortSignal;\n}',
+    declaration: 'export interface ApprovalRequestEvent {\n    readonly agent: Agent;\n    readonly toolName: string;\n    readonly callId?: ToolCallId;\n    readonly reason?: string;\n    readonly displayReason?: {\n        readonly en: string;\n        readonly [locale: string]: string;\n    };\n    readonly signal?: AbortSignal;\n    responder?: string;\n}',
   },
   {
     name: 'ArchiveSessionOptions',
@@ -5513,7 +5513,7 @@ export const TYPE_API: readonly TypeApiEntry[] = [
   },
   {
     name: 'AskUserQuestionRequestEvent',
-    declaration: 'export interface AskUserQuestionRequestEvent {\n    questions: AskUserQuestionItem[];\n    agent?: Agent;\n    signal?: AbortSignal;\n    wait?: {\n        callId: ToolCallId;\n        timed?: boolean;\n    };\n}',
+    declaration: 'export interface AskUserQuestionRequestEvent {\n    questions: AskUserQuestionItem[];\n    agent?: Agent;\n    signal?: AbortSignal;\n    wait?: {\n        callId: ToolCallId;\n        timed?: boolean;\n    };\n    answeredBy?: string;\n}',
   },
   {
     name: 'AssembleContext',
@@ -7461,7 +7461,7 @@ export const TYPE_API: readonly TypeApiEntry[] = [
   },
   {
     name: 'PreStepDecision',
-    declaration: 'export type PreStepDecision = {\n    kind: \'reject\';\n} | {\n    kind: \'enter\';\n    messages: UserMessage[];\n    startsRequestSeries?: true;\n};',
+    declaration: 'export type PreStepDecision = {\n    kind: \'reject\';\n    observation?: {\n        reason: string;\n    };\n} | {\n    kind: \'enter\';\n    messages: UserMessage[];\n    startsRequestSeries?: true;\n};',
   },
   {
     name: 'PreToolDecision',
@@ -9377,7 +9377,7 @@ export const TYPE_API: readonly TypeApiEntry[] = [
   },
   {
     name: 'ToolDefinition',
-    declaration: 'export interface ToolDefinition extends ToolSchema {\n    readonly output: ToolOutputDefinition;\n    execute(args: unknown, exec: ToolRunContext): Promise<unknown>;\n    projectContent?(exec: Readonly<ToolExecution>, result: Readonly<ToolExecutionResult>): ContentBlock[] | undefined;\n    finalizeContent?(exec: Readonly<ToolExecution>, result: Readonly<ToolExecutionResult>): ContentBlock[] | undefined;\n    timeoutMs?: number;\n    isConcurrencySafe?(args: unknown): boolean;\n    presentCall?(args: unknown): ToolCallView | undefined;\n    presentResult?(args: unknown, result: ToolResult): ToolResultView | undefined;\n}',
+    declaration: 'export interface ToolDefinition extends ToolSchema {\n    readonly output: ToolOutputDefinition;\n    execute(args: unknown, exec: ToolRunContext): Promise<unknown>;\n    projectContent?(exec: Readonly<ToolExecution>, result: Readonly<ToolExecutionResult>): ContentBlock[] | undefined;\n    finalizeContent?(exec: Readonly<ToolExecution>, result: Readonly<ToolExecutionResult>): ContentBlock[] | undefined;\n    timeoutMs?: number;\n    isConcurrencySafe?(args: unknown): boolean;\n    presentCall?(args: unknown): ToolCallView | undefined;\n    presentResult?(args: unknown, result: ToolResult): ToolResultView | undefined;\n    readonly pluginOwner?: string;\n    readonly providerId?: string;\n}',
   },
   {
     name: 'ToolDispatchExecution',
@@ -9397,7 +9397,7 @@ export const TYPE_API: readonly TypeApiEntry[] = [
   },
   {
     name: 'ToolExecutionInput',
-    declaration: 'export interface ToolExecutionInput {\n    readonly callId: ToolCallId;\n    readonly rootCallId?: ToolCallId;\n    readonly name: string;\n    readonly schema?: ToolSchema;\n    readonly arguments: unknown;\n    readonly agent?: Agent;\n    readonly toolSet?: ResolvedToolSet;\n    readonly parent?: ToolExecutionToken;\n    readonly signal: AbortSignal;\n}',
+    declaration: 'export interface ToolExecutionInput {\n    readonly callId: ToolCallId;\n    readonly rootCallId?: ToolCallId;\n    readonly name: string;\n    readonly schema?: ToolSchema;\n    readonly arguments: unknown;\n    readonly agent?: Agent;\n    readonly toolSet?: ResolvedToolSet;\n    readonly log?: {\n        readonly turn: number;\n        readonly step: number;\n    };\n    readonly parent?: ToolExecutionToken;\n    readonly signal: AbortSignal;\n}',
   },
   {
     name: 'ToolExecutionResult',
@@ -9413,7 +9413,7 @@ export const TYPE_API: readonly TypeApiEntry[] = [
   },
   {
     name: 'ToolExecutor',
-    declaration: 'export interface ToolExecutor {\n    readonly sections?: readonly ToolPromptSection[];\n    describe(tools: readonly ToolDefinition[]): ToolModelInput;\n    execute(input: ToolBatchInput): Promise<ToolBatchResult>;\n}',
+    declaration: 'export interface ToolExecutor {\n    readonly executorId?: string;\n    readonly sections?: readonly ToolPromptSection[];\n    describe(tools: readonly ToolDefinition[]): ToolModelInput;\n    execute(input: ToolBatchInput): Promise<ToolBatchResult>;\n}',
   },
   {
     name: 'ToolFailure',

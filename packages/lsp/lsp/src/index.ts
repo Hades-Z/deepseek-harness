@@ -8,11 +8,16 @@
  * invalid or conflicting registration publishes nothing, and its disposer releases every
  * reservation together. Selection routes a query by the file's final extension; it never depends on
  * registration order. The seam exposes exactly the four operations and no JSON-RPC escape hatch.
+ * A resolved query route appends a log-only `tool/provider-selected` record (payload type owned
+ * by `@deepseek-ai/dsh-web`); the append is contained and never changes the query result or
+ * exception.
  * @module @deepseek-ai/dsh-lsp
  */
 
 import { Context, Service } from '@deepseek-ai/cordis'
+import type {} from '@deepseek-ai/dsh-agent'
 import { HarnessError } from '@deepseek-ai/dsh-llm'
+import type {} from '@deepseek-ai/dsh-web'
 import type { LspProviderId } from './brand.ts'
 import type {
   LspProvider,
@@ -145,7 +150,32 @@ export class Lsp extends Service implements LspService {
     if (route === undefined) {
       throw new LspError(`no LSP provider handles "${request.filePath}"`, 'LSP_UNAVAILABLE')
     }
+    this.appendProviderSelected(route.provider.id)
     return route.provider.query({ ...request, languageId: route.languageId }, signal)
+  }
+
+  /**
+   * Append the log-only `tool/provider-selected` record after the route lookup it records. The
+   * payload type is owned by `@deepseek-ai/dsh-web` (this event's declaration home); the lsp
+   * capability here records the real extension-route selection. The append is contained: failure
+   * is warned and never changes the query result or the propagated exception. Nothing is written
+   * when no initiator agent owns a Session (agentless queries record nothing, and no identity is
+   * inferred from any other source).
+   * @param providerId - the id of the provider the extension route resolved to.
+   */
+  private appendProviderSelected(providerId: LspProviderId): void {
+    try {
+      const agent = this.ctx.get('agents')?.currentInitiator()
+      if (agent === undefined) return
+      agent.session.append('tool/provider-selected', {
+        sessionId: agent.session.id,
+        capability: 'lsp',
+        providerId,
+        selectionMode: 'extension-route',
+      })
+    } catch (error: unknown) {
+      this.ctx.logger.warn(`lsp: tool/provider-selected log event failed: ${error instanceof Error ? error.message : String(error)}`)
+    }
   }
 }
 

@@ -35,6 +35,6 @@ import { DeepSeekSearchProvider } from '../src/provider.ts'
 describe('deepseek search egress', () => {
   it('goes through the proxy', async () => {
     const p = new DeepSeekSearchProvider(() => ({ apiKey: 'probe', baseURL: 'http://dsk-probe.invalid', model: 'm', apiVersion: '2023-06-01', maxTokens: 16, maxUses: 1 }))
-    expect(await observe(() => p.search({ query: 'probe' }))).toEqual(['REQ http://dsk-probe.invalid/messages'])
+    expect(await observe(() => p.search({ query: 'probe' }))).toEqual(['REQ http://dsk-probe.invalid/v1/messages'])
   })
 })

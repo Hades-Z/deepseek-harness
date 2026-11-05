@@ -136,6 +136,8 @@ export async function apply(ctx: Context, config: Config): Promise<void> {
   ctx.tools.register(defineTool({
     name: 'todo_write',
     description: describe(allowParallel),
+    // Trajectory provenance: names this package as the settled call's owner.
+    pluginOwner: '@deepseek-ai/dsh-tool-todo',
     parameters: {
       todos: {
         type: 'array',

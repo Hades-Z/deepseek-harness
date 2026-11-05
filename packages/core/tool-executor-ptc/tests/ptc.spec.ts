@@ -323,6 +323,26 @@ describe('mode-aware wire contribution', () => {
     expect(sdk?.text).not.toContain('tools.bash(')
   })
 
+  it('records the admitted tools behind the run_code transport the executor exposes', async () => {
+    const { ctx, systemPrompt } = await setup({ mode: 'ptc' })
+    registerEcho(ctx)
+    const { agent } = await mintAgentScope(ctx, 'exposure')
+    const toolSet = await ctx.tools.resolve({ agent, modelSelection: { provider: 'test', model: 'test' }, signal: testToolSignal })
+    const assembly = await systemPrompt.assemble({ agent, scope: agent, toolSet })
+    expect(assembly.tools.map(tool => tool.name)).toEqual([RUN_CODE_NAME])
+    const events = agent.session.snapshotEvents().filter(event => event.type === 'tool/catalog-exposed')
+    expect(events).toHaveLength(1)
+    expect(events[0]?.type === 'tool/catalog-exposed' && events[0].data).toMatchObject({
+      sessionId: 'exposure',
+      admitted: ['echo'],
+      exposed: ['run_code'],
+      digest: 'd4875f7bc81bd665844827c6d103078d541f83e807b99807f7d3230a4a338f1a',
+    })
+    // PTC collapses the admitted set behind the transport: exactly one schema,
+    // and its digest pins the collapsed description the model actually received.
+    expect(events[0]?.type === 'tool/catalog-exposed' && Object.keys(events[0].data.schemaDigests ?? {})).toEqual(['run_code'])
+  })
+
   it("mode 'ptc' states the run_code-only rule BEFORE the per-tool guidance that names each tool", async () => {
     const { ctx, systemPrompt } = await setup({ mode: 'ptc' })
     registerEcho(ctx)
@@ -802,6 +822,64 @@ describe('the sub-dispatch scheduler (native concurrency contract)', () => {
     expect(gated.peakLive()).toBe(2)
   })
 
+  it('records the overlap degree per dispatch and one run-wide overlap summary at settle', async () => {
+    const { ctx, runtime } = await setup({ mode: 'ptc', maxParallelSubCalls: 3 })
+    const gated = registerGated(ctx, 'safe_read', true)
+    // A real Session captures every append, including the log-only run-wide `ptc/settled-overlap`
+    // summary (the `fakeAgent()` stub captures only `tool/ptc-` events).
+    const session = Session.create(SessionId('ptc-overlap'))
+    const agent = { ctx, session } as Agent
+    runtime.behavior = async (request) => {
+      const tools = request.bindings[0]!.functions
+      const all = Promise.all([
+        tools.safe_read!({ id: 'a' }),
+        tools.safe_read!({ id: 'b' }),
+        tools.safe_read!({ id: 'c' }),
+      ])
+      await expect.poll(() => gated.pending()).toBe(3)
+      gated.releaseAll()
+      return { logs: [], value: (await all).map(String).join(',') }
+    }
+    const result = await runCode(ctx, 'program', { agent })
+    expect(result.isError).toBe(false)
+    // Stop condition: business outcome and ordering unchanged by the new fields.
+    expect(gated.peakLive()).toBe(3)
+    if (result.isError) throw new Error('expected success')
+    expect(result.value).toMatchObject({ result: 'safe_read:a,safe_read:b,safe_read:c' })
+
+    const events = session.snapshotEvents()
+    const starts = events.filter(event => event.type === 'tool/ptc-dispatch-start').map(event => event.data)
+    const settles = events.filter(event => event.type === 'tool/ptc-dispatch').map(event => event.data)
+    expect(starts.map(start => start.subCallId)).toEqual(['call-1:ptc:1', 'call-1:ptc:2', 'call-1:ptc:3'])
+
+    // Part A: the start event carries the effective overlap cap and the 1-based submission position
+    // (which matches the subCallId suffix) for each dispatch.
+    for (const [index, start] of starts.entries()) {
+      expect(start.maxParallel).toBe(3)
+      expect(start.submissionOrder).toBe(index + 1)
+    }
+    // Part A: each settle event carries the cap, the submission position, and the overlap degree
+    // captured at that call's admission. The three calls are admitted in submission order, so the
+    // in-flight sibling count at each start is 0, then 1, then 2.
+    const settleByOrder = new Map(settles.map(settle => [settle.submissionOrder, settle]))
+    expect(settleByOrder.size).toBe(3)
+    for (const settle of settles) expect(settle.maxParallel).toBe(3)
+    expect(settleByOrder.get(1)?.overlapAtStart).toBe(0)
+    expect(settleByOrder.get(2)?.overlapAtStart).toBe(1)
+    expect(settleByOrder.get(3)?.overlapAtStart).toBe(2)
+
+    // Part B: exactly one run-wide summary, appended once after every dispatch settled.
+    const overlaps = events.filter(event => event.type === 'ptc/settled-overlap').map(event => event.data)
+    expect(overlaps).toHaveLength(1)
+    expect(overlaps[0]).toMatchObject({
+      rootCallId: 'call-1',
+      maxParallel: 3,
+      dispatched: 3,
+      settled: 3,
+      peakOverlap: 3,
+    })
+  })
+
   it('a tool unregistered between binding enumeration and dispatch fails as unknown tool', async () => {
     const { ctx, runtime } = await setup({ mode: 'ptc' })
     const calls: unknown[] = []
@@ -1078,10 +1156,12 @@ describe('the run_code dispatch bridge', () => {
       {
         rootCallId: 'call-1', parentCallId: 'call-1', subCallId: 'call-1:ptc:1', name: 'echo',
         arguments: { value: 'one' }, isError: false, content: [{ type: 'text', text: 'echo:one' }],
+        maxParallel: 10, submissionOrder: 1, overlapAtStart: 0,
       },
       {
         rootCallId: 'call-1', parentCallId: 'call-1', subCallId: 'call-1:ptc:2', name: 'echo',
         arguments: { value: 'two' }, isError: false, content: [{ type: 'text', text: 'echo:two' }],
+        maxParallel: 10, submissionOrder: 2, overlapAtStart: 0,
       },
     ])
     expect(result.meta).toBeUndefined()

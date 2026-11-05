@@ -458,6 +458,8 @@ export function applyWebFetchTool(ctx: Context, timeoutMs: number, maxOutputChar
   ctx.tools.register(defineTool({
     name: 'web_fetch',
     description: 'Fetch the content of a specific HTTP(S) URL and return it decoded to text.',
+    // Trajectory provenance: names this package as the settled call's owner.
+    pluginOwner: '@deepseek-ai/dsh-tool-web',
     parameters: {
       url: { type: 'string', required: true, description: 'The HTTP(S) URL to fetch.' },
     },

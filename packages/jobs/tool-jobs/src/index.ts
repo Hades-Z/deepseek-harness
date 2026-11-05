@@ -29,6 +29,8 @@ declare module '@deepseek-ai/dsh-llm' {
   }
 }
 
+import type {} from '@deepseek-ai/dsh-workspace-changes/types'
+
 export const name = 'tool-jobs'
 export const inject = ['tools', 'jobs', 'systemPrompt']
 
@@ -237,6 +239,36 @@ function readBody(read: JobRead): { text: string; job: PublicJobSnapshot } {
   return { text, job: publicJob(read.job) }
 }
 
+/* jscpd:ignore-start */
+/**
+ * Record this plugin's own pre-execute vote. The append is contained so a
+ * logging failure cannot change the call, the output bound, or event order; a
+ * call without an Agent has no Session to record into.
+ * @param ctx - plugin context supplying the logger.
+ * @param exec - the execution this listener handled.
+ * @param decision - this listener's own decision.
+ */
+function recordPreExecuteDecision(
+  ctx: Context,
+  exec: ToolExecution,
+  decision: 'allow' | 'deny' | 'ask' | 'handled',
+): void {
+  const session = exec.agent?.session
+  if (session === undefined) return
+  try {
+    session.append('tool/pre-execute-decision', {
+      listenerId: 'tool-jobs',
+      callId: exec.callId,
+      toolName: exec.name,
+      decision,
+      ...exec.log === undefined ? {} : { turn: exec.log.turn, step: exec.log.step },
+    })
+  } catch (error: unknown) {
+    ctx.logger.warn(`tool-jobs: tool/pre-execute-decision log event failed: ${error instanceof Error ? error.message : String(error)}`)
+  }
+}
+/* jscpd:ignore-end */
+
 export function apply(ctx: Context, config: Config): void {
   const waitDefault = config.waitTimeoutMs ?? 30_000
   const waitCap = config.maxWaitTimeoutMs ?? 600_000
@@ -285,7 +317,10 @@ export function apply(ctx: Context, config: Config): void {
   const outputLimits = new WeakMap<ToolExecution, number>()
   ctx.on('tools/pre-execute', (exec, next) => {
     const maxBytes = visibleOutputLimit(ctx, exec)
-    if (maxBytes !== undefined) outputLimits.set(exec, maxBytes)
+    if (maxBytes !== undefined) {
+      outputLimits.set(exec, maxBytes)
+      recordPreExecuteDecision(ctx, exec, 'handled')
+    }
     return next()
   }, { prepend: true })
   const finalizeJobContent: NonNullable<ToolDefinition['finalizeContent']> = (exec, result) => {
@@ -432,6 +467,8 @@ export function apply(ctx: Context, config: Config): void {
   ctx.tools.register(defineTool({
     name: 'job_output',
     description: 'Read a background job: output since the previous read for stream jobs, or the result of a finished final-output job.',
+    // Trajectory provenance: names this package as the settled call's owner.
+    pluginOwner: '@deepseek-ai/dsh-tool-jobs',
     // A timed-out wait returns job state rather than a TOOL_TIMEOUT error, so
     // this tool owns its deadline instead of using ToolDefinition.timeoutMs.
     parameters: {
@@ -540,6 +577,8 @@ export function apply(ctx: Context, config: Config): void {
   ctx.tools.register(defineTool({
     name: 'job_list',
     description: 'List your background jobs (running and finished) with their ids, kinds, and statuses.',
+    // Trajectory provenance: names this package as the settled call's owner.
+    pluginOwner: '@deepseek-ai/dsh-tool-jobs',
     parameters: {},
     output: {
       schema: { type: 'array', items: PUBLIC_JOB_SCHEMA },
@@ -560,6 +599,8 @@ export function apply(ctx: Context, config: Config): void {
   ctx.tools.register(defineTool({
     name: 'job_kill',
     description: 'Request cancellation of a running background job.',
+    // Trajectory provenance: names this package as the settled call's owner.
+    pluginOwner: '@deepseek-ai/dsh-tool-jobs',
     parameters: {
       job_id: { type: 'string', required: true, description: 'Job id returned by the tool that started the background work.' },
       reason: { type: 'string', description: 'Optional short reason, recorded in the log and forwarded to the job.' },

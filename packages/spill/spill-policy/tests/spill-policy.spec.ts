@@ -232,8 +232,8 @@ describe('outer PTC mode failure capture', () => {
     await ctx.plugin(StubStore)
     await ctx.plugin(SpillPolicy, { maxInlineTokens: 64 })
     await mountRuntime(ctx, { maxOutputBytes: 500 })
-    const events: unknown[] = []
-    const agent = observedAgent(ctx, 'code-spill', (_type: string, data: unknown) => { events.push(data) })
+    const events: { type: string; data: unknown }[] = []
+    const agent = observedAgent(ctx, 'code-spill', (type: string, data: unknown) => { events.push({ type, data }) })
 
     const result = await executeModelToolFixture(ctx, {
       signal: testToolSignal,
@@ -253,7 +253,11 @@ describe('outer PTC mode failure capture', () => {
     expect(saved[0]?.content).toContain('code run failed (output-limit)')
     expect(saved[0]?.content).toContain('HEAD-')
     expect(textOf(result.content)).toContain('Full formatted result stored at: /spill/run_code.txt')
-    expect(events).toEqual([])
+    // The outer-result arm spills; no separate PTC dispatch record is written.
+    expect(events.filter(event => event.type === 'tool/ptc-dispatch')).toEqual([])
+    expect(events.filter(event => event.type === 'spill/spilled').map(event => event.data)).toEqual([
+      expect.objectContaining({ callId: 'code-output-limit', toolName: 'run_code', label: 'result', threshold: 64 }),
+    ])
   })
 })
 

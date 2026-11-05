@@ -113,7 +113,7 @@ export interface Config {
 
 - `inject`: `agents` · `sessions` · `llm` · `tools` · `systemPrompt` · `sessionProjections`
 - `refs`: [`AgentOptions`](subsystems/core.zh.md) · [`SessionId`](subsystems/core.zh.md) · `Volatile` (`@deepseek-ai/cosmokit`)
-- `source`: [`packages/core/agent-loop/src/index.ts:253`](../packages/core/agent-loop/src/index.ts)
+- `source`: [`packages/core/agent-loop/src/index.ts:256`](../packages/core/agent-loop/src/index.ts)
 
 ```ts config-catalog
 /** Agent-loop plugin configuration. */
@@ -1472,6 +1472,29 @@ export interface Config {
 ```
 <!-- END GENERATED config-catalog:@deepseek-ai/dsh-experimental-tool-subagent-oar -->
 
+<!-- BEGIN GENERATED config-catalog:@deepseek-ai/dsh-experimental-trajectory-probe -->
+<a id="deepseek-aidsh-experimental-trajectory-probe"></a>
+
+## `@deepseek-ai/dsh-experimental-trajectory-probe`
+
+- `inject`: `sessions`
+- `source`: [`packages/experimental/trajectory-probe/src/index.ts:37`](../packages/experimental/trajectory-probe/src/index.ts)
+
+```ts config-catalog
+/** Deployment-tunable selection of which recording points the probe owns. */
+export interface Config {
+  /** Recording points the probe writes facts for; others stay with their point-fix owner. */
+  enabledFacts?: EnabledFact[]
+  /** Whether the probe follows child (subagent) sessions in addition to roots. */
+  includeChildSessions?: boolean
+}
+
+/** A recording point the probe was configured to own. */
+export type EnabledFact =
+  | 'inbox' | 'request' | 'attempt' | 'catalog' | 'pipeline' | 'subagent-read' | 'workspace'
+```
+<!-- END GENERATED config-catalog:@deepseek-ai/dsh-experimental-trajectory-probe -->
+
 <!-- BEGIN GENERATED config-catalog:@deepseek-ai/dsh-experimental-translator -->
 <a id="deepseek-aidsh-experimental-translator"></a>
 
@@ -1674,7 +1697,7 @@ export interface HmrConfig extends ChokidarOptions {
 ## `@deepseek-ai/dsh-hooks-claude-code`
 
 - `inject`: `shell` · `agents` · `workingDirectory`
-- `source`: [`packages/experimental/hooks-claude-code/src/index.ts:50`](../packages/experimental/hooks-claude-code/src/index.ts)
+- `source`: [`packages/experimental/hooks-claude-code/src/index.ts:52`](../packages/experimental/hooks-claude-code/src/index.ts)
 
 ```ts config-catalog
 /** Plugin config: where the CC hook config lives + substitution roots. */
@@ -1713,7 +1736,7 @@ export interface Config {
 ## `@deepseek-ai/dsh-hooks-codex`
 
 - `inject`: `shell` · `agents` · `workingDirectory`
-- `source`: [`packages/experimental/hooks-codex/src/index.ts:49`](../packages/experimental/hooks-codex/src/index.ts)
+- `source`: [`packages/experimental/hooks-codex/src/index.ts:51`](../packages/experimental/hooks-codex/src/index.ts)
 
 ```ts config-catalog
 /** Plugin config: where the Codex hooks.json lives + the model name for payloads. */
@@ -3294,7 +3317,7 @@ export interface Config {
 
 ## `@deepseek-ai/dsh-skill`
 
-- `source`: [`packages/skill/skill/src/index.ts:278`](../packages/skill/skill/src/index.ts)
+- `source`: [`packages/skill/skill/src/index.ts:285`](../packages/skill/skill/src/index.ts)
 
 ```ts config-catalog
 /** Skill registry configuration. */
@@ -3402,7 +3425,7 @@ export interface Config {
 ## `@deepseek-ai/dsh-spill-policy`
 
 - `inject`: `tools`
-- `source`: [`packages/spill/spill-policy/src/index.ts:26`](../packages/spill/spill-policy/src/index.ts)
+- `source`: [`packages/spill/spill-policy/src/index.ts:28`](../packages/spill/spill-policy/src/index.ts)
 
 ```ts config-catalog
 /** Optional result-retention budget. */
@@ -4088,7 +4111,7 @@ export interface Config {
 ## `@deepseek-ai/dsh-tool-jobs`
 
 - `inject`: `tools` · `jobs` · `systemPrompt`
-- `source`: [`packages/jobs/tool-jobs/src/index.ts:43`](../packages/jobs/tool-jobs/src/index.ts)
+- `source`: [`packages/jobs/tool-jobs/src/index.ts:45`](../packages/jobs/tool-jobs/src/index.ts)
 
 ```ts config-catalog
 /** Configures bounded `job_output` waits and completion-notice delivery. */
@@ -4302,7 +4325,7 @@ export interface Config {
 
 - `inject`: `tools` · `subagents` · `systemPrompt` · `sessionProjections`
 - `refs`: [`AgentOptions`](subsystems/core.zh.md)
-- `source`: [`packages/subagent/tool-subagent/src/index.ts:46`](../packages/subagent/tool-subagent/src/index.ts)
+- `source`: [`packages/subagent/tool-subagent/src/index.ts:47`](../packages/subagent/tool-subagent/src/index.ts)
 
 ```ts config-catalog
 /** Config: which registered provider this tool delegates to, plus child defaults. */
@@ -4533,7 +4556,7 @@ export type ApprovalPolicy = 'ask' | 'never'
 ## `@deepseek-ai/dsh-web`
 
 - `refs`: `Volatile` (`@deepseek-ai/cordis`)
-- `source`: [`packages/web/web/src/index.ts:57`](../packages/web/web/src/index.ts)
+- `source`: [`packages/web/web/src/index.ts:81`](../packages/web/web/src/index.ts)
 
 ```ts config-catalog
 /**
@@ -4787,7 +4810,7 @@ export interface Config {
 ## `@deepseek-ai/dsh-workspace-changes`
 
 - `inject`: `subprocess` · `fs`
-- `source`: [`packages/deliverables/workspace-changes/src/index.ts:34`](../packages/deliverables/workspace-changes/src/index.ts)
+- `source`: [`packages/deliverables/workspace-changes/src/index.ts:65`](../packages/deliverables/workspace-changes/src/index.ts)
 
 ```ts config-catalog
 /** Snapshot, capture, and comparison bounds. Invalid values fail plugin load. */

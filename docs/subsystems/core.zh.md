@@ -394,7 +394,15 @@ pre-step 决策使用与持久 user-role 输入相同、带标识的 `UserMessag
 ```ts type-equiv
 /** Whether and with which messages the loop enters a proposed step. */
 type PreStepDecision =
-  | { kind: 'reject' }
+  | {
+    kind: 'reject'
+    /**
+     * The rejecting listener's own observation, when it volunteered one. The
+     * loop records it verbatim in the log-only `turn/pre-step` event; absence
+     * keeps that event's `rejectReason` missing rather than inventing one.
+     */
+    observation?: { reason: string }
+  }
   | {
     kind: 'enter'
     messages: UserMessage[]
@@ -1085,11 +1093,13 @@ Handle one failed model-request attempt before the loop retries or closes its st
  * @param payload.provider - the provider selected for the failed request.
  * @param payload.failure - serializable facts normalized at the final adapter boundary.
  * @param payload.retryPolicy - the policy of the adapter registration that served the failed request.
+ * @param payload.assemblyDigest - SHA-256 hex of the step's rendered system prompt, unchanged across the step's retry series; recovery may log it for reuse tracking.
+ * @param payload.compactionGeneration - the session surface generation when the step assembled, so recovery can tell whether a compaction landed since.
  * @param payload.signal - the turn abort signal.
  * Scope-filtered dispatch (`@deepseek-ai/dsh-scope`): agent-scoped listeners receive only that agent.
  * @mode waterfall
  */
-'agent/request-error'(this: Scoped<Agent>, payload: { agent: Agent; turn: number; step: number; provider: string; failure: LlmFailure; retryPolicy: ResolvedRetryPolicy | undefined; signal: AbortSignal }, next: () => Promise<RequestErrorAction>): Promise<RequestErrorAction>
+'agent/request-error'(this: Scoped<Agent>, payload: { agent: Agent; turn: number; step: number; provider: string; failure: LlmFailure; retryPolicy: ResolvedRetryPolicy | undefined; assemblyDigest?: string; compactionGeneration?: number; signal: AbortSignal }, next: () => Promise<RequestErrorAction>): Promise<RequestErrorAction>
 ```
 
 Types: [LlmFailure](llm-streaming.zh.md) · [ResolvedRetryPolicy](llm-streaming.zh.md) · [Scoped](scope.zh.md)

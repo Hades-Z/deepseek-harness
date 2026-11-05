@@ -18,6 +18,7 @@ const SDK_RENDERERS = {
 
 /** Runs programs whose nested tool calls use the shared guarded invocation pipeline. */
 export class PtcExecutor implements ToolExecutor {
+  readonly executorId = 'ptc'
   readonly sections: readonly ToolPromptSection[]
   private readonly pipeline: ToolExecutionPipeline
   private readonly maxParallelSubCalls: number

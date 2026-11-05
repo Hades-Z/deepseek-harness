@@ -37,10 +37,13 @@
   zh: 42e5c42675c32dcc
 /deepseek-ai-dsh-tool-call-timeout-policy/understand-the-implementation/composing-with-other-wrappers:
   en: 09fba7333cf511f6
-  zh: 965c60634d370287
+  zh: 4786a06138f596df
+/deepseek-ai-dsh-tool-call-timeout-policy/understand-the-implementation/deadline-transition-records:
+  en: 83c70524483db956
+  zh: 69d2064af3c66f58
 /deepseek-ai-dsh-tool-call-timeout-policy/understand-the-implementation/source-map:
-  en: 1fa5646d5e9d18eb
-  zh: d09dfc46cbc654f4
+  en: 2364e9cc9147f222
+  zh: d02c85d5897d0efa
 /deepseek-ai-dsh-tool-call-timeout-policy/further-exploration:
   en: fb2426b1c4c3da4a
   zh: ff9a7cd6a6b9f631

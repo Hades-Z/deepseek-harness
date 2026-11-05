@@ -14,10 +14,11 @@
 import { ToolBatchExecutionError } from './executor.ts'
 import { TOOL_ABORTED_BEFORE_DISPATCH } from './contracts.ts'
 import type { ToolBatchInput, ToolBatchResult, ToolCallResult } from './executor.ts'
-import { createToolResultMessage, type ToolCallBlock } from '@deepseek-ai/dsh-llm'
+import { createToolResultMessage, type ToolCallBlock, type ToolCallId } from '@deepseek-ai/dsh-llm'
 import type { SessionSeq, UserMessage } from '@deepseek-ai/dsh-session'
 import type { ToolExecutionInput, ToolExecutionMode, ToolExecutionResult, ToolRunContext } from './contracts.ts'
 import type { ScheduledToolDispatch, ToolExecutionPipeline } from './pipeline.ts'
+import type { ToolExecutionPlanEventData } from './types.ts'
 import { assertNever } from '@deepseek-ai/dsh-util-values'
 
 /** One tool call after argument parsing, ready to schedule. */
@@ -29,7 +30,25 @@ interface PlannedCall {
 /** Settled dispatch awaiting model-order finalization. */
 type Slot = ScheduledToolDispatch & { exec: ToolRunContext }
 
-/** One scheduler group outcome, including a drained cancellation. */
+/** One call's mode within a recorded plan phase. */
+type PlanCall = ToolExecutionPlanEventData['calls'][number]
+
+/**
+ * Records one `tool/execution-plan` phase. A batch without both an Agent and
+ * log target records nothing; a failed append is contained by the pipeline.
+ */
+type PlanRecorder = (
+  phase: ToolExecutionPlanEventData['phase'],
+  calls: readonly PlanCall[],
+  reclassified: ToolExecutionPlanEventData['reclassified'],
+  consumed: number | null,
+  concluded: boolean | null,
+  exclusiveBarrier?: ToolCallId,
+) => void
+
+/**
+ * One scheduler group outcome, including a drained cancellation.
+ */
 interface GroupOutcome {
   consumed: number
   aborted: boolean
@@ -57,6 +76,23 @@ export async function executeToolBatch(
     throw new RangeError('maxParallelToolCalls must be a positive integer')
   }
   const settlement = new BatchSettlement(input)
+  const planLog = input.log
+  const recordPlan: PlanRecorder = agent === undefined || planLog === undefined
+    ? () => {}
+    : (phase, calls, reclassified, consumed, concluded, exclusiveBarrier) => {
+        const session = agent.session
+        pipeline.appendLogEvent(session, 'tool/execution-plan', () => ({
+          sessionId: session.id,
+          turn: planLog.turn,
+          step: planLog.step,
+          phase,
+          calls,
+          reclassified,
+          exclusiveBarrier: exclusiveBarrier ?? null,
+          consumed,
+          concluded,
+        }))
+      }
   try {
     // Inputs are distinct because tools/execute wrappers may replace `exec.signal`.
     const planned: PlannedCall[] = toolCalls.map(block => ({
@@ -67,6 +103,7 @@ export async function executeToolBatch(
         arguments: parseArguments(block.arguments),
         ...agent === undefined ? {} : { agent },
         ...toolSet === undefined ? {} : { toolSet },
+        ...input.log !== undefined ? { log: input.log } : {},
         signal,
       },
     }))
@@ -80,7 +117,7 @@ export async function executeToolBatch(
       const mode = pipeline.executionMode(first.exec).kind
       const group = mode === 'parallel' ? planned.slice(next) : [first]
       const outcome = await runGroup(
-        pipeline, settlement, maxParallelToolCalls ?? maxParallel(), group, mode, signal,
+        pipeline, settlement, maxParallelToolCalls ?? maxParallel(), group, mode, signal, recordPlan,
       )
       next += outcome.consumed
       concluded ||= outcome.concluded
@@ -121,7 +158,10 @@ async function runGroup(
   group: PlannedCall[],
   mode: ToolExecutionMode['kind'],
   signal: AbortSignal,
+  recordPlan: PlanRecorder,
 ): Promise<GroupOutcome> {
+  const calls: PlanCall[] = group.map(call => ({ callId: call.block.id, mode }))
+  recordPlan('start', calls, null, null, null)
   const slots: (Slot | undefined)[] = group.map(() => undefined)
   // Started slots retain their `tool/call` seq so the result can cite it.
   const callSeqs: Array<SessionSeq | undefined> = group.map(() => undefined)
@@ -131,6 +171,8 @@ async function runGroup(
   let aborted: boolean = signal.aborted
   let concluded = false
   let schedulerFailure: { error: unknown } | undefined
+  /** Index whose reclassification this group already recorded; later pool refills see the same barrier. */
+  let reclassifiedIndex: number | null = null
   const throwSchedulerFailure = (): void => {
     if (schedulerFailure !== undefined) throw schedulerFailure.error
   }
@@ -189,7 +231,20 @@ async function runGroup(
       // oxlint-disable-next-line typescript/no-non-null-assertion -- bounded by the loop condition
       const nextCall = group[nextToStart]!
       if (nextToStart > 0 && mode === 'parallel'
-        && pipeline.executionMode(nextCall.exec).kind !== 'parallel') break
+        && pipeline.executionMode(nextCall.exec).kind !== 'parallel') {
+        if (reclassifiedIndex !== nextToStart) {
+          reclassifiedIndex = nextToStart
+          recordPlan(
+            'reclassify',
+            calls.map((call, index) => index === nextToStart ? { callId: call.callId, mode: 'exclusive' } : call),
+            { callId: nextCall.block.id, mode: 'exclusive' },
+            null,
+            null,
+            nextCall.block.id,
+          )
+        }
+        break
+      }
       await startCall(nextToStart)
       nextToStart++
       throwSchedulerFailure()
@@ -226,10 +281,12 @@ async function runGroup(
     // Started calls and accepted context settle first; every remaining model
     // call then receives an ordered synthetic result before the turn aborts.
     for (const call of group.slice(started)) settlement.skip(call.block)
+    recordPlan('commit', calls, null, group.length, concluded)
     return { consumed: group.length, aborted: true, concluded }
   }
   /* v8 ignore next -- unreachable: a non-aborted group commits every started call */
   if (committed !== started) throw new Error('tool-call scheduler: uncommitted settled calls')
+  recordPlan('commit', calls, null, started, concluded)
   return { consumed: started, aborted: false, concluded }
 }
 

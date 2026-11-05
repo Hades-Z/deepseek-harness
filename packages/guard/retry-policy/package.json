@@ -1,0 +1,50 @@
+{
+  "name": "@deepseek-ai/dsh-tool-call-retry-policy",
+  "description": "Tool-call retry policy: a tools/execute wrapper that retries a call only when its tool declares a replayable retry budget, recording each retried attempt",
+  "version": "0.2.2-alpha.2",
+  "publishConfig": {
+    "access": "public"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/deepseek-ai/deepseek-harness.git",
+    "directory": "packages/guard/retry-policy"
+  },
+  "type": "module",
+  "main": "lib/index.js",
+  "types": "lib/types/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./lib/types/index.d.ts",
+      "default": "./lib/index.js"
+    },
+    "./types": {
+      "types": "./lib/types/types.d.ts",
+      "default": "./lib/types/types.js"
+    },
+    "./src/*": "./src/*",
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "lib/index.js",
+    "lib/types/**/*.js",
+    "lib/types/**/*.d.ts"
+  ],
+  "license": "MIT",
+  "peerDependencies": {
+    "@deepseek-ai/dsh-llm": "workspace:*",
+    "@deepseek-ai/dsh-session": "workspace:*",
+    "@deepseek-ai/dsh-tools": "workspace:*",
+    "@deepseek-ai/cordis": "workspace:~"
+  },
+  "devDependencies": {
+    "@deepseek-ai/dsh-agent": "workspace:*",
+    "@deepseek-ai/dsh-llm": "workspace:*",
+    "@deepseek-ai/dsh-session": "workspace:*",
+    "@deepseek-ai/dsh-system-prompt": "workspace:*",
+    "@deepseek-ai/dsh-tool-executor-native": "workspace:*",
+    "@deepseek-ai/dsh-tool-testkit": "workspace:*",
+    "@deepseek-ai/dsh-tools": "workspace:*",
+    "@deepseek-ai/cordis": "workspace:~"
+  }
+}

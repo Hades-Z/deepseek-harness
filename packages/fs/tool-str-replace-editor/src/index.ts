@@ -429,6 +429,8 @@ function registerStrReplaceEditor(ctx: Context, config: ResolvedConfig): void {
   ctx.tools.register(defineTool({
     name: 'str_replace_editor',
     description: config.description,
+    // Trajectory provenance: names this package as the settled call's owner.
+    pluginOwner: '@deepseek-ai/dsh-tool-str-replace-editor',
     parameters: {
       command: {
         type: 'string',

@@ -84,6 +84,8 @@ export function apply(ctx: Context, config: Config = {}): void {
   const skillTool = defineTool({
     name: 'skill',
     description: 'Load the full instructions for a skill. Call it before acting on a task that names or clearly matches a skill in the session skill catalog.',
+    // Trajectory provenance: names this package as the settled call's owner.
+    pluginOwner: '@deepseek-ai/dsh-tool-skill',
     parameters: {
       name: { type: 'string', required: true, description: 'The exact skill name from the available skills list.' },
     },

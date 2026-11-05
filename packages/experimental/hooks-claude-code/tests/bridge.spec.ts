@@ -187,6 +187,10 @@ describe('hooks-claude-code bridge — PreToolUse', () => {
     const result = events(agent).find(e => e.type === 'tool/result')
     expect(result?.type === 'tool/result' && result.data.message.isError).toBe(true)
     expect(result?.type === 'tool/result' && result.data.message.content.some(b => b.type === 'text' && b.text.includes('danger tool blocked'))).toBe(true)
+    const vote = events(agent).find(e => e.type === 'tool/pre-execute-decision')
+    expect(vote?.type === 'tool/pre-execute-decision' && vote.data).toMatchObject({
+      listenerId: 'hooks-claude-code', callId: 'c1', toolName: 'danger', decision: 'deny', reason: 'danger tool blocked',
+    })
   })
 
   it('a PreToolUse hook whose matcher does NOT match leaves the tool alone', async () => {
@@ -209,6 +213,31 @@ describe('hooks-claude-code bridge — PreToolUse', () => {
     expect(ran).toBe(true)
     const result = events(agent).find(e => e.type === 'tool/result')
     expect(result?.type === 'tool/result' && result.data.message.isError).toBe(false)
+  })
+
+  it('a PreToolUse hook that allows records its own allow vote and the call proceeds', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'dsh-hooks-claude-'))
+    dirs.push(dir)
+    const s = join(dir, 'allow.sh')
+    writeFileSync(s, '#!/usr/bin/env bash\necho \'{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"allow"}}\'\n')
+    chmodSync(s, 0o755)
+    writeFileSync(join(dir, 'hooks.json'), JSON.stringify({ hooks: { PreToolUse: [{ hooks: [{ type: 'command', command: s }] }] } }))
+
+    const adapter = new MockAdapter([toolCallResponse('c1', 'echo', {}), textResponse('done')])
+    const ctx = await harness(dir, adapter)
+    let ran = false
+    ctx.tools.register(defineContentToolFixture({ name: 'echo', description: 'e', parameters: {}, async execute() { ran = true; return [{ type: 'text', text: 'ok' }] } }))
+    const agent = await ctx.agentLoop.create(SessionId('a1'), { provider: 'mock', model: 'mock' })
+    agent.followup(createUserMessage({ content: [{ type: 'text', text: 'go' }], source: { kind: 'user' } }))
+    await waitForIdle(ctx, agent)
+
+    expect(ran).toBe(true)
+    const result = events(agent).find(e => e.type === 'tool/result')
+    expect(result?.type === 'tool/result' && result.data.message.isError).toBe(false)
+    const vote = events(agent).find(e => e.type === 'tool/pre-execute-decision')
+    expect(vote?.type === 'tool/pre-execute-decision' && vote.data).toMatchObject({
+      listenerId: 'hooks-claude-code', callId: 'c1', toolName: 'echo', decision: 'allow',
+    })
   })
 })
 
@@ -278,7 +307,12 @@ describe('hooks-claude-code bridge — PostToolUse', () => {
     const result = events(agent).find(e => e.type === 'tool/result')
     expect(result?.type === 'tool/result' && result.data.message.isError).toBe(true)
     expect(result?.type === 'tool/result' && result.data.message.content.some(b => b.type === 'text' && b.text.includes('needs approval'))).toBe(true)
+    const vote = events(agent).find(e => e.type === 'tool/pre-execute-decision')
+    expect(vote?.type === 'tool/pre-execute-decision' && vote.data).toMatchObject({
+      listenerId: 'hooks-claude-code', callId: 'c1', toolName: 'echo', decision: 'ask', reason: 'needs approval',
+    })
   })
+
 })
 
 describe('hooks-claude-code bridge — SessionStart', () => {
@@ -304,6 +338,48 @@ describe('hooks-claude-code bridge — SessionStart', () => {
 
     expect(JSON.stringify(adapter.requests[0]!.messages)).toContain('project uses tabs')
   })
+})
+
+describe('hooks-claude-code bridge — turn/stopping vote', () => {
+  it('votes stop after its own Stop point, before the loop summary', async () => {
+    const dir = writeConfig({})
+    const adapter = new MockAdapter([textResponse('done')])
+    const ctx = await harness(dir, adapter)
+    const agent = await ctx.agentLoop.create(SessionId('stop-vote'), { provider: 'mock', model: 'mock' })
+    agent.followup(createUserMessage({ content: [{ type: 'text', text: 'go' }], source: { kind: 'user' } }))
+    await waitForIdle(ctx, agent)
+
+    const votes = events(agent).filter(event => event.type === 'turn/stopping').map(event => event.data)
+    expect(votes).toEqual([
+      { turn: 1, source: 'hooks-claude-code', outcome: 'stop' },
+      { turn: 1, step: 1, source: 'agent-loop', outcome: 'stop' },
+    ])
+  })
+
+  it('reports its steering message id when a blocking Stop hook continues the turn', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'dsh-hooks-claude-'))
+    dirs.push(dir)
+    const marker = join(dir, 'fired')
+    const cont = join(dir, 'cont.sh')
+    writeFileSync(cont, `#!/usr/bin/env bash\nif [ -e "${marker}" ]; then exit 0; fi\ntouch "${marker}"\necho "keep going: address the goal" >&2\nexit 2\n`)
+    chmodSync(cont, 0o755)
+    writeFileSync(join(dir, 'hooks.json'), JSON.stringify({ hooks: { Stop: [{ hooks: [{ type: 'command', command: cont }] }] } }))
+
+    const adapter = new MockAdapter([textResponse('first answer'), textResponse('second answer')])
+    const ctx = await harness(dir, adapter)
+    const agent = await ctx.agentLoop.create(SessionId('stop-vote-continue'), { provider: 'mock', model: 'mock' })
+    agent.followup(createUserMessage({ content: [{ type: 'text', text: 'go' }], source: { kind: 'user' } }))
+    await waitForIdle(ctx, agent)
+
+    const votes = events(agent).filter(event => event.type === 'turn/stopping').map(event => event.data)
+    expect(votes).toHaveLength(4)
+    expect(votes[0]).toMatchObject({ turn: 1, source: 'hooks-claude-code', outcome: 'continue' })
+    const steered = events(agent).find(event => event.type === 'user/message' && event.data.source.kind === 'hooks-claude-code')
+    expect(votes[0]?.steeringMessageIds).toEqual([steered?.type === 'user/message' ? steered.data.id : undefined])
+    expect(votes[1]).toMatchObject({ turn: 1, step: 1, source: 'agent-loop', outcome: 'continue' })
+    expect(votes[2]).toEqual({ turn: 1, source: 'hooks-claude-code', outcome: 'stop' })
+    expect(votes[3]).toMatchObject({ turn: 1, step: 2, source: 'agent-loop', outcome: 'stop' })
+  }, 15_000)
 })
 
 describe('hooks-claude-code bridge — SubagentStart / SubagentStop (observe)', () => {

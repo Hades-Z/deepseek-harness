@@ -110,6 +110,8 @@ export function registerTimedAskUser(ctx: Context, timeout = 120): void {
   ctx.tools.register(defineTool({
     name: 'ask_user_question',
     description,
+    // Trajectory provenance: names this package as the settled call's owner.
+    pluginOwner: '@deepseek-ai/dsh-tool-ask-user',
     parameters: {
       questions: {
         type: 'array',

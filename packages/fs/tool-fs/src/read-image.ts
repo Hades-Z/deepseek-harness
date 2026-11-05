@@ -211,6 +211,8 @@ export function applyReadImageTool(ctx: Context): void {
     name: 'read_image',
     description: 'Read a PNG/JPEG/WebP/GIF file and return the image itself. '
       + 'Large images are downscaled automatically; do not install image libraries or create thumbnails to inspect an image.',
+    // Trajectory provenance: names this package as the settled call's owner.
+    pluginOwner: '@deepseek-ai/dsh-tool-fs',
     parameters: {
       file_path: { type: 'string', required: true, description: 'Path to the image file, resolved by the filesystem backend.' },
     },

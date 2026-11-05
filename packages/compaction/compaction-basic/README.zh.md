@@ -134,6 +134,8 @@ kind: "package-reference"
 
 事务验证表层范围与持久锁，追加 `compaction/start`，通过钩子生成摘要，重新验证稳定性（自动调用要求整个表层、手动调用只要求所选范围），拒绝不缩小源内容的摘要，追加 `compaction/summary` 与替换 `user/message`，并恰好进行一次 `compaction/end` 尝试。活动的未匹配 start 是持久锁：位于较新 `session/end-seed` 之前的未匹配标记是先前生命周期留下的陈旧证据，不会阻塞；位于该边界之后的标记报告 `busy`。闭合失败会有意留下阻塞性的未匹配标记。完成清理与持久化后，取消仍具有最终决定权。
 
+每个标记对还会记录运行原因（`compaction/start` 上的 `trigger` 与 `autoCaller`）以及闭合时可见的重试事实（`compaction/end` 上的 `generationAdvanced`、`retryDecision`、`recovered`）；这些观察字段仅作记录，从不驱动恢复。
+
 ### 配置解析
 
 `resolveConfig` 验证并分离默认值，`resolveTargetPolicy` 合并精确的提供方／模型覆盖，`resolveCompactSpec` 要求显式传入适配器容量与路由请求的输出预留，以解析触发阈值和保留预算。预留取自生效信封的 `maxTokens`，否则回退到适配器默认值，再回退到零。策略解析绝不咨询模型发现（`listModels()`）；容量来自持久路由，切换模型时则来自拟使用的目标。

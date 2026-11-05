@@ -147,3 +147,75 @@ export interface WebFetchProvider {
  * structured error metadata.
  */
 export class WebError extends HarnessError {}
+
+/**
+ * How a provider won selection for the shared `tool/provider-selected` recording point. Web
+ * operations select by configuration or as the sole usable provider; an lsp query routes by file
+ * extension.
+ */
+export type ToolProviderSelectionMode = 'configured' | 'auto-single' | 'extension-route'
+
+/** The capability whose provider selection the shared `tool/provider-selected` event records. */
+export type ToolProviderSelectedCapability = 'web-search' | 'web-fetch' | 'lsp'
+
+/**
+ * Durable payload for `tool/provider-selected`: which provider one capability operation resolved
+ * to, and how. Selection is a private seam concern — `resolveProvider` and the lsp route table are
+ * not public — so the trajectory probe cannot see it; this records the real selection after it
+ * succeeds. A failed selection (missing, unavailable, ambiguous, no route) throws the seam's
+ * structured error and appends nothing: no selection fact exists to record. `turn`/`step` are
+ * absent: the trajectory probe joins them from its call-id → turn/step association index.
+ * This module owns the payload; `@deepseek-ai/dsh-web` produces the web-search and web-fetch
+ * events and `@deepseek-ai/dsh-lsp` the lsp event, each under its own capability.
+ */
+export interface ToolProviderSelectedEventData {
+  /** The owning agent's session id. The event is written only when an initiator agent owns a session. */
+  readonly sessionId: string
+  /** The operation that resolved a provider. */
+  readonly capability: ToolProviderSelectedCapability
+  /** Registry id of the provider the selection resolved to. */
+  readonly providerId: string
+  /** How the provider won: explicit configuration, sole usable registration, or extension route. */
+  readonly selectionMode: ToolProviderSelectionMode
+}
+
+/**
+ * Durable payload for `web/search-route`: the single route one `WebRuntime.search()` call took.
+ * The seam has no fallback chain — one selection, one provider call — so the event records that
+ * one route's provider, selection mode, real elapsed time, and outcome, not a chain. `elapsedMs`
+ * measures the selected provider's `search()` call only (monotonic clock), not selection or result
+ * capping; `outcome` is `error` when the provider call threw, whose structured failure still
+ * propagates unchanged. `turn`/`step` are absent: the trajectory probe joins them from its
+ * call-id → turn/step association index.
+ */
+export interface WebSearchRouteEventData {
+  /** The owning agent's session id. The event is written only when an initiator agent owns a session. */
+  readonly sessionId: string
+  /** Registry id of the provider the search ran through. */
+  readonly providerId: string
+  /** How the provider won selection: explicit configuration or sole usable registration. */
+  readonly selectionMode: Exclude<ToolProviderSelectionMode, 'extension-route'>
+  /** Real elapsed milliseconds of the selected provider's `search()` call, from a monotonic clock. */
+  readonly elapsedMs: number
+  /** Whether the provider call resolved (`ok`) or threw (`error`). */
+  readonly outcome: 'ok' | 'error'
+}
+
+declare module '@deepseek-ai/dsh-session/types' {
+  interface SessionEventMap {
+    /**
+     * The provider one capability operation resolved to, with the selection mode. Log-only:
+     * provider selection is private to the web and lsp seams. One event per resolved selection;
+     * failed selections record nothing.
+     * @param data - the real selection fact for one operation.
+     */
+    'tool/provider-selected': ToolProviderSelectedEventData
+    /**
+     * The single route one web search took: provider, selection mode, real elapsed time, and
+     * outcome. Log-only: the seam has no fallback chain, and the probe sees only the tool result,
+     * not which provider served it or how the route took.
+     * @param data - the route fact for one search call.
+     */
+    'web/search-route': WebSearchRouteEventData
+  }
+}
