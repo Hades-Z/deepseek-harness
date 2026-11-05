@@ -49,7 +49,9 @@ RUN python3 -m venv /opt/venv \
 ENV PATH="/opt/venv/bin:${PATH}" \
     DSH_BIN=/workspace/apps/cli/lib/bin.js \
     DSH_PROFILE=sdk \
+    DSH_HOME=/var/lib/dsh \
     DSH_INITIALIZE_TIMEOUT=300
+RUN mkdir -p /var/lib/dsh
 EXPOSE 8080
 HEALTHCHECK --interval=30s --timeout=5s --start-period=90s \
   CMD python3 -c "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8080/healthz', timeout=4).status == 200 else 1)"
