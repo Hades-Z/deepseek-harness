@@ -16,6 +16,7 @@ platform choice this package does not otherwise make.
 from __future__ import annotations
 
 import json
+import math
 import os
 import threading
 import uuid
@@ -24,6 +25,20 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any, Callable
 
 from .api import DeepSeekHarness, DeepSeekHarnessConfig
+
+
+class _RunCancelled(Exception):
+    """Raised at the delivery point when the run's cancellation already won."""
+
+
+def _refuse_when_cancelled(run: "_Run") -> Callable[[], None]:
+    """Build the delivery-point check for one run's prompt."""
+
+    def check() -> None:
+        if run.cancel_requested:
+            raise _RunCancelled
+
+    return check
 
 
 @dataclass
@@ -36,7 +51,15 @@ class _Run:
     session_id: str
     result: dict[str, Any] | None = None
     error: str | None = None
+    # ``none`` -> ``cancelling`` -> ``cancelled`` | ``cancel-failed``. A stop is
+    # published as cancelled only after the harness confirmed it.
+    cancel_state: str = "none"
     done: threading.Event = field(default_factory=threading.Event)
+
+    @property
+    def cancel_requested(self) -> bool:
+        """Whether this run must withhold delivery and its own outcome."""
+        return self.cancel_state != "none"
 
 
 class HarnessService:
@@ -52,12 +75,23 @@ class HarnessService:
         self._harness: DeepSeekHarness | None = None
         self._runs: dict[str, _Run] = {}
         self._lock = threading.Lock()
+        # Guards construction and the one-time start. Separate from ``_lock``:
+        # holding the registry lock across a spawn would block status polls.
+        self._start_lock = threading.Lock()
 
     def _ensure_started(self) -> DeepSeekHarness:
-        if self._harness is None:
-            self._harness = DeepSeekHarness(self._config)
-        self._harness.start()
-        return self._harness
+        """Start the shared runtime once when several runs arrive together.
+
+        ``start()`` checks for a runtime and then spawns one with no lock in
+        between, so concurrent callers each pass the check and each launch a
+        process. The losing assignment keeps running as an orphan whose stdout
+        nobody reads, and the run waits for events that never come.
+        """
+        with self._start_lock:
+            if self._harness is None:
+                self._harness = DeepSeekHarness(self._config)
+            self._harness.start()
+            return self._harness
 
     def start_run(self, task: dict[str, Any]) -> str:
         """Accept one task and begin executing it on a worker thread.
@@ -69,12 +103,17 @@ class HarnessService:
         instruction = task.get("instruction")
         if not isinstance(instruction, str) or not instruction:
             raise ValueError("task.instruction must be a nonempty string")
+        requested_session = task.get("session_id")
+        if requested_session is not None and (
+            not isinstance(requested_session, str) or not requested_session
+        ):
+            raise ValueError("task.session_id must be a nonempty string")
         run_id = uuid.uuid4().hex
         run = _Run(
             run_id=run_id,
             task_id=str(task.get("task_id") or ""),
             instruction=instruction,
-            session_id=f"session-{run_id}",
+            session_id=requested_session or f"session-{run_id}",
         )
         with self._lock:
             self._runs[run_id] = run
@@ -82,21 +121,42 @@ class HarnessService:
         def execute() -> None:
             try:
                 harness = self._ensure_started()
-                result = harness.run(instruction, session_id=run.session_id)
-                run.result = {
-                    "final_response": result.final_response,
-                    "finish_reason": result.finish_reason,
-                    "session_id": result.session_id,
-                    "events": result.events,
+                # The delivery point is the single place a late cancellation
+                # wins: it covers both "cancelled while starting" and
+                # "cancelled while this prompt was queued".
+                try:
+                    delivered = harness.run(
+                        instruction,
+                        session_id=run.session_id,
+                        before_deliver=_refuse_when_cancelled(run),
+                    )
+                except _RunCancelled:
+                    return
+                completed = {
+                    "final_response": delivered.final_response,
+                    "finish_reason": delivered.finish_reason,
+                    "session_id": delivered.session_id,
+                    "events": delivered.events,
                     "notifications": [
                         {"method": n.method, "payload": n.payload}
-                        for n in result.notifications
+                        for n in delivered.notifications
                     ],
                 }
+                with self._lock:
+                    # A cancellation claims the outcome; a late completion must
+                    # not overwrite it.
+                    if not run.cancel_requested:
+                        run.result = completed
             except Exception as error:  # every failure must reach the caller
-                run.error = f"{type(error).__name__}: {error}"
+                with self._lock:
+                    if not run.cancel_requested:
+                        run.error = f"{type(error).__name__}: {error}"
             finally:
-                run.done.set()
+                with self._lock:
+                    # While a cancellation awaits confirmation the cancel path
+                    # owns the terminal state, so it is not published here.
+                    if not run.cancel_requested:
+                        run.done.set()
 
         threading.Thread(target=execute, name=f"run-{run_id}", daemon=True).start()
         return run_id
@@ -106,21 +166,61 @@ class HarnessService:
             run = self._runs.get(run_id)
         if run is None:
             return None
+        # Reported before the done flag: a cancellation still waiting for the
+        # harness to settle must not read as cancelled.
+        if run.cancel_state == "cancelling":
+            return {"run_id": run.run_id, "status": "cancelling"}
         if not run.done.is_set():
             return {"run_id": run.run_id, "status": "running"}
+        if run.cancel_state == "cancelled":
+            return {"run_id": run.run_id, "status": "cancelled"}
         if run.error is not None:
             return {"run_id": run.run_id, "status": "failed", "error": run.error}
         return {"run_id": run.run_id, "status": "completed", **(run.result or {})}
 
     def cancel(self, run_id: str) -> bool:
-        """Mark a run cancelled. The harness finishes its current turn first."""
+        """Stop one run's session and wait until the harness confirms it.
+
+        Only that session stops; the shared harness and other runs continue. The
+        run becomes ``cancelled`` only after confirmation. A finished run keeps
+        its recorded outcome. A refused or failed cancellation is published as
+        failed and raised, so nobody reads a false success.
+        """
         with self._lock:
             run = self._runs.get(run_id)
-        if run is None:
-            return False
-        run.error = run.error or "cancelled"
-        run.done.set()
+            if run is None:
+                return False
+            if run.done.is_set():
+                return True
+            run.cancel_state = "cancelling"
+        # Read the harness under the start lock: a start in progress holds it,
+        # so this sees either no harness or a fully initialized one.
+        with self._start_lock:
+            harness = self._harness
+        if harness is None:
+            with self._lock:
+                run.cancel_state = "cancelled"
+                run.done.set()
+            return True
+        try:
+            harness.cancel_session(run.session_id)
+        except Exception as error:
+            with self._lock:
+                run.cancel_state = "cancel-failed"
+                run.error = f"cancellation failed: {type(error).__name__}: {error}"
+                run.done.set()
+            raise RuntimeError(run.error) from error
+        with self._lock:
+            run.cancel_state = "cancelled"
+            run.done.set()
         return True
+
+
+def _request_budget() -> float:
+    budget = float(os.environ.get("DSH_REQUEST_TIMEOUT_SECONDS", "30"))
+    if not math.isfinite(budget) or budget <= 0:
+        raise ValueError("DSH_REQUEST_TIMEOUT_SECONDS must be finite and positive")
+    return budget
 
 
 def config_from_environment() -> DeepSeekHarnessConfig:
@@ -153,6 +253,9 @@ def config_from_environment() -> DeepSeekHarnessConfig:
         base_url=required("LLM_BASE_URL"),
         api_key=required("LLM_API_KEY"),
         initialize_timeout_seconds=float(os.environ.get("DSH_INITIALIZE_TIMEOUT", "300")),
+        # A control request that waits forever cannot report a bounded outcome;
+        # the case runtime is separate and is not limited by this budget.
+        request_timeout_seconds=_request_budget(),
     )
 
 
@@ -209,13 +312,17 @@ def _handler(service: HarnessService) -> type[BaseHTTPRequestHandler]:
                     if not service.cancel(run_id):
                         self._reply(404, {"error": {"message": "run not found"}})
                         return
-                    self._reply(200, {"run_id": run_id, "status": "cancelled"})
+                    state = service.run_state(run_id)
+                    self._reply(200, {"run_id": run_id, "status": state["status"]})
                     return
                 self._reply(404, {"error": {"message": f"no route for {self.path}"}})
             except ValueError as error:
                 self._reply(400, {"error": {"message": str(error)}})
             except json.JSONDecodeError as error:
                 self._reply(400, {"error": {"message": f"invalid JSON: {error}"}})
+            except RuntimeError as error:
+                # An unconfirmed cancellation is a failed request, never success.
+                self._reply(500, {"error": {"message": str(error)}})
 
     return Handler
 

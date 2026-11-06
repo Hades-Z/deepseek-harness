@@ -64,6 +64,10 @@ class HarnessClient:
         self._reader_thread: threading.Thread | None = None
         self._stderr_thread: threading.Thread | None = None
         self._question_tasks: dict[str, tuple[threading.Event, threading.Thread]] = {}
+        # Prompts the client has decided to send but the runtime has not yet
+        # acknowledged; cancellation waits for these so it cannot be overtaken.
+        self._session_prompts_in_flight: dict[str, int] = {}
+        self._session_prompts_settled = threading.Condition(self._lock)
         self._closing = False
         self._user_question_handler: UserQuestionHandler | None = None
 
@@ -205,17 +209,89 @@ class HarnessClient:
         *,
         on_notification: Callable[[Notification], None] | None = None,
         notification_subscription: "NotificationSubscription | None" = None,
+        before_deliver: Callable[[], None] | None = None,
     ) -> str:
+        """Return the queued message id without confirming a persistence flush.
+
+        ``before_deliver`` runs at the delivery point, after the prompt is
+        registered as in flight and before its frame is written; raising there
+        sends nothing. A caller that owns an automation interval uses it to
+        refuse work cancelled in the meantime.
+        """
         payload: JsonObject = {"sessionId": session_id, "contentBlocks": content_blocks}
-        response = self.request(
-            "session/prompt",
-            payload,
-            response_model=_SessionPromptResponse,
-            on_notification=on_notification,
-            notification_filter=self._notification_belongs_to_session_tree(session_id),
-            notification_subscription=notification_subscription,
-        )
+        with self._session_prompts_settled:
+            self._session_prompts_in_flight[session_id] = (
+                self._session_prompts_in_flight.get(session_id, 0) + 1
+            )
+        try:
+            if before_deliver is not None:
+                before_deliver()
+            response = self.request(
+                "session/prompt",
+                payload,
+                response_model=_SessionPromptResponse,
+                on_notification=on_notification,
+                notification_filter=self._notification_belongs_to_session_tree(session_id),
+                notification_subscription=notification_subscription,
+            )
+        finally:
+            with self._session_prompts_settled:
+                remaining = self._session_prompts_in_flight.get(session_id, 1) - 1
+                if remaining > 0:
+                    self._session_prompts_in_flight[session_id] = remaining
+                else:
+                    self._session_prompts_in_flight.pop(session_id, None)
+                    self._session_prompts_settled.notify_all()
         return response.messageId
+
+    def session_cancel(self, session_id: str) -> None:
+        """Stop one session's active and queued work and await confirmation.
+
+        Other sessions and the runtime process keep running. A prompt the
+        client already decided to send is refused by the runtime rather than
+        starting after the cancellation; a prompt sent after this returns
+        starts new work on the same session.
+
+        Raises:
+            ValueError: ``session_id`` is empty.
+            JsonRpcError: The runtime refused or failed the cancellation.
+            SdkProtocolError: The runtime answered without confirming.
+            TimeoutError: An in-flight prompt or the runtime exceeded the
+                configured request bound.
+            TransportClosedError: The runtime is gone.
+        """
+        if not session_id:
+            raise ValueError("session_cancel requires a non-empty session_id")
+        # Let a prompt already decided reach the runtime first; the runtime then
+        # cancels it instead of letting it start after ours. The wait shares the
+        # request budget, so a prompt that never receives its receipt cannot
+        # hang the cancellation forever.
+        budget = self.config.request_timeout_seconds
+        deadline = None if budget is None else time.monotonic() + budget
+        with self._session_prompts_settled:
+            while self._session_prompts_in_flight.get(session_id):
+                if deadline is None:
+                    self._session_prompts_settled.wait()
+                    continue
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    raise TimeoutError(
+                        f"session/cancel waited for an in-flight prompt on "
+                        f"{session_id!r} beyond its {budget}s request budget"
+                    )
+                self._session_prompts_settled.wait(remaining)
+        response = self.request(
+            "session/cancel",
+            {"sessionId": session_id},
+            response_model=_SessionCancelResponse,
+        )
+        if response.cancelled is not True:
+            raise SdkProtocolError("session/cancel did not confirm cancellation")
+        if response.sessionId != session_id:
+            raise SdkProtocolError(
+                "session/cancel confirmed a different session: "
+                f"{response.sessionId!r} != {session_id!r}"
+            )
 
     def resume_session(self, session_id: str) -> None:
         """Restore a persisted session without sending a prompt; propagate restoration failures."""
@@ -694,6 +770,11 @@ class NotificationSubscription:
 
 class _SessionPromptResponse(BaseModel):
     messageId: str
+
+
+class _SessionCancelResponse(BaseModel):
+    sessionId: str
+    cancelled: bool
 
 
 class _WorkingDirectoryResponse(BaseModel):

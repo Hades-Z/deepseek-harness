@@ -794,6 +794,133 @@ for line in sys.stdin:
         assert notification.payload["result"]["content_blocks"][0]["text"] == "done"
 
 
+def test_client_cancels_one_session_and_rejects_an_unconfirmed_answer(tmp_path: Path) -> None:
+    """A cancel reports success only when the runtime confirms this exact session."""
+    script = tmp_path / "fake_bridge.py"
+    script.write_text(
+        """
+import json
+import sys
+
+for line in sys.stdin:
+    msg = json.loads(line)
+    method = msg.get("method")
+    session = (msg.get("params") or {}).get("sessionId")
+    if method == "initialize":
+        result = {"serverInfo": {"name": "fake-dsh"}}
+    elif method == "session/cancel":
+        # The first two calls lie in the two ways a runtime can: an unconfirmed
+        # cancellation and a confirmation for a different session.
+        calls = globals().setdefault("calls", [])
+        calls.append(session)
+        if len(calls) == 1:
+            result = {"sessionId": session, "cancelled": False}
+        elif len(calls) == 2:
+            result = {"sessionId": "someone-else", "cancelled": True}
+        else:
+            result = {"sessionId": session, "cancelled": True}
+    elif method == "shutdown":
+        print(json.dumps({"jsonrpc": "2.0", "id": msg["id"], "result": {}}), flush=True)
+        break
+    else:
+        result = {}
+    print(json.dumps({"jsonrpc": "2.0", "id": msg["id"], "result": result}), flush=True)
+""".strip()
+    )
+
+    with HarnessClient(_launch_args=(sys.executable, str(script))) as client:
+        client.initialize(provider="deepseek-official", cwd="/workspace", model="dsagent")
+        with pytest.raises(SdkProtocolError):
+            client.session_cancel("main")
+        with pytest.raises(SdkProtocolError):
+            client.session_cancel("main")
+        client.session_cancel("main")
+
+
+def test_client_cancel_waits_for_an_in_flight_prompt_before_sending(tmp_path: Path) -> None:
+    """Cancellation is ordered behind a prompt the client already decided to send."""
+    script = tmp_path / "fake_bridge.py"
+    script.write_text(
+        """
+import json
+import sys
+import time
+
+for line in sys.stdin:
+    msg = json.loads(line)
+    method = msg.get("method")
+    if method == "initialize":
+        result = {"serverInfo": {"name": "fake-dsh"}}
+    elif method == "session/prompt":
+        # Hold the receipt so the prompt is still in flight when cancel runs.
+        time.sleep(0.3)
+        result = {"messageId": "m-1"}
+    elif method == "session/cancel":
+        result = {"sessionId": "main", "cancelled": True}
+    elif method == "shutdown":
+        print(json.dumps({"jsonrpc": "2.0", "id": msg["id"], "result": {}}), flush=True)
+        break
+    else:
+        result = {}
+    print(json.dumps({"jsonrpc": "2.0", "id": msg["id"], "result": result}), flush=True)
+""".strip()
+    )
+
+    with HarnessClient(_launch_args=(sys.executable, str(script))) as client:
+        client.initialize(provider="deepseek-official", cwd="/workspace", model="dsagent")
+        prompt = threading.Thread(
+            target=lambda: client.session_prompt("main", [{"type": "text", "text": "work"}]),
+            daemon=True,
+        )
+        prompt.start()
+        deadline = time.monotonic() + 5
+        while client._session_prompts_in_flight.get("main") != 1 and time.monotonic() < deadline:
+            time.sleep(0.01)
+        assert client._session_prompts_in_flight.get("main") == 1
+        started = time.monotonic()
+        client.session_cancel("main")
+        assert time.monotonic() - started >= 0.05, "cancel did not wait for the in-flight prompt"
+        prompt.join(timeout=5)
+
+
+def test_client_refuses_a_prompt_at_its_delivery_point(tmp_path: Path) -> None:
+    """Raising in ``before_deliver`` sends nothing to the runtime."""
+    script = tmp_path / "fake_bridge.py"
+    script.write_text(
+        """
+import json
+import sys
+
+for line in sys.stdin:
+    msg = json.loads(line)
+    method = msg.get("method")
+    if method == "initialize":
+        result = {"serverInfo": {"name": "fake-dsh"}}
+    elif method == "session/prompt":
+        result = {"messageId": "should-not-be-sent"}
+    elif method == "shutdown":
+        print(json.dumps({"jsonrpc": "2.0", "id": msg["id"], "result": {}}), flush=True)
+        break
+    else:
+        result = {}
+    print(json.dumps({"jsonrpc": "2.0", "id": msg["id"], "result": result}), flush=True)
+""".strip()
+    )
+
+    with HarnessClient(_launch_args=(sys.executable, str(script))) as client:
+        client.initialize(provider="deepseek-official", cwd="/workspace", model="dsagent")
+
+        def refuse() -> None:
+            raise RuntimeError("cancelled before delivery")
+
+        with pytest.raises(RuntimeError, match="cancelled before delivery"):
+            client.session_prompt(
+                "main", [{"type": "text", "text": "work"}], before_deliver=refuse
+            )
+        # The refused prompt must not linger as in-flight work either.
+        assert client._session_prompts_in_flight.get("main") is None
+
+
 def test_client_ignores_non_json_stdout_lines(tmp_path: Path) -> None:
     script = tmp_path / "fake_bridge.py"
     script.write_text(

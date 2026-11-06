@@ -58,6 +58,20 @@ with DeepSeekHarness(dsh_home="/absolute/path/to/saved-home") as harness:
     result = session.run("Continue the task.")
 ```
 
+`harness.cancel_session(session_id)` 停止单个会话当前的轮次和排队输入，只有在运行时确认该会话已回到空闲后才返回。其他会话和运行时进程继续运行。客户端已经决定发送的提示词会在交付前被拒绝，不会在取消之后才开始；`cancel_session` 返回后发送的提示词会在同一会话上开始新的工作。运行时失败，或应答未确认本会话时，会抛出异常，不会报告成功。
+
+`run()` 会阻塞到轮次结束，因此需要从另一个线程调用 `cancel_session`。
+
+```py
+import threading
+
+with DeepSeekHarness(dsh_home="/absolute/path/to/dsh-home") as harness:
+    turn = threading.Thread(target=harness.run, args=("Long task.",), kwargs={"session_id": "example-002"})
+    turn.start()
+    harness.cancel_session("example-002")
+    turn.join()
+```
+
 <a id="client-approvals"></a>
 ## 客户端审批
 

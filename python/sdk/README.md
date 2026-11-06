@@ -58,6 +58,20 @@ with DeepSeekHarness(dsh_home="/absolute/path/to/saved-home") as harness:
     result = session.run("Continue the task.")
 ```
 
+`harness.cancel_session(session_id)` stops one session's active turn and queued input, and returns only after the runtime confirms the session reached idle. Other sessions and the runtime process keep running. A prompt the client had already decided to send is refused before delivery instead of starting after the cancellation; a prompt sent after `cancel_session` returns starts new work on the same session. A runtime failure or an answer that does not confirm this session raises instead of reporting success.
+
+`run()` blocks until the turn ends, so call `cancel_session` from another thread.
+
+```py
+import threading
+
+with DeepSeekHarness(dsh_home="/absolute/path/to/dsh-home") as harness:
+    turn = threading.Thread(target=harness.run, args=("Long task.",), kwargs={"session_id": "example-002"})
+    turn.start()
+    harness.cancel_session("example-002")
+    turn.join()
+```
+
 <a id="client-approvals"></a>
 ## Client approvals
 

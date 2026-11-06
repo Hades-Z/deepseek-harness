@@ -95,6 +95,20 @@ export interface SessionResumeParams {
   sessionId: string
 }
 
+/** One cancellation target. */
+export interface SessionCancelParams {
+  /** Session whose active work must stop; a session that has not started is refused for later prompts. */
+  sessionId: string
+}
+
+/** Confirmation that the runtime holds no active work for the session. */
+export interface SessionCancelResult {
+  /** The session that reached quiescence. */
+  sessionId: string
+  /** Always `true`; a failure is reported as a JSON-RPC error instead. */
+  cancelled: true
+}
+
 /** Wait for an existing SDK session and its managed descendants to finish. */
 export interface SessionWaitParams {
   /** An SDK-owned session id; waiting never creates a session. */
@@ -178,6 +192,7 @@ export interface HarnessSdkRequestMap {
   'initialize': { params: InitializeParams; result: InitializeResult }
   'session/prompt': { params: SessionPromptParams; result: SessionPromptResult }
   'session/resume': { params: SessionResumeParams; result: Record<string, never> }
+  'session/cancel': { params: SessionCancelParams; result: SessionCancelResult }
   'session/wait': { params: SessionWaitParams; result: Record<string, never> }
   'session/working-directory/get': { params: SessionWorkingDirectoryParams; result: SessionWorkingDirectoryResult }
   'session/working-directory/set': { params: SessionWorkingDirectorySetParams; result: SessionWorkingDirectoryResult }
